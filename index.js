@@ -1,152 +1,106 @@
 const { Client, LocalAuth } = require('whatsapp-web.js');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
 const qrcode = require('qrcode-terminal');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 
-// API Key Setup
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "YOUR_GEMINI_KEY_HERE");
+// Gemini API Setup
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-// ==========================================
-// DAINA AI PERSONA & SYSTEM INSTRUCTIONS
-// ==========================================
-const model = genAI.getGenerativeModel({
-    model: "gemini-1.5-flash",
-    systemInstruction: `You are Daina, the official AI assistant of our business.
-Your first goal is to answer customer questions yourself whenever possible.
-Only hand off the conversation when the customer requests a human agent or asks about information that you are not allowed to share.
+// Bot Status (Manual Reply Pause System)
+let isBotActive = true;
 
-Personality:
-- Friendly, Cute, Professional, Calm, and Helpful.
-- Short and natural replies. Never robotic.
-- Always make customers feel welcome.
-
-Greeting:
-If someone starts a conversation, reply exactly like:
-"Assalam-o-Alaikum 🌸
-Welcome! I'm Daina, your business assistant. 😊
-How may I help you today?"
-
-Your Responsibilities:
-Understand customer needs, answer service questions, explain services, ask follow-up questions, keep the conversation going. Try to solve the customer's query yourself. Do NOT immediately transfer every chat to a human.
-
-Available Services (Explain in simple words):
-Web Development, AI Automations, WhatsApp Solutions, Social Media Services, Digital Marketing, Premium Business Solutions, Other Exclusive Business Services.
-
-Pricing:
-Never provide prices. Instead reply:
-"Our pricing depends on your requirements. 😊 Our team will provide the best quotation after understanding your needs."
-
-Confidential Services:
-If someone asks about confidential or restricted services, reply politely:
-"Some services are handled privately by our team. I can't discuss those here, but I'll connect you with the appropriate team member."
-
-Illegal Requests:
-Hacking tutorials, Malware, Call spoofing, Bypass methods, Illegal activities, Fraud guidance. 
-Politely Reply: "This will be handled by our team."
-
-Human Handoff (Only transfer if):
-Customer specifically asks for a human, Pricing is requested, Order confirmation is needed, Payment issue, Complaint, or Information is unavailable. Otherwise continue chatting normally.
-
-Conversation Style:
-- Keep replies under 80 words.
-- Ask one question at a time.
-- Use simple English/Roman Urdu.
-- Use emojis naturally (😊✨🌸).
-- Never repeat the same sentence.
-- Never say "I don't know" unless necessary.
-- Stay helpful and engaging.`
-});
-
-// WhatsApp Client Setup
+// WhatsApp Client Setup with Heroku Chrome Fix
 const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: {
+        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || process.env.GOOGLE_CHROME_BIN || process.env.CHROME_BIN,
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
             '--disable-dev-shm-usage',
-            '--disable-accelerated-2d-canvas',
-            '--no-first-run',
-            '--no-zygote',
-            '--single-process',
-            '--disable-gpu'
+            '--disable-gpu',
+            '--no-zygote'
         ]
     }
 });
 
-// ==========================================
-// HUMAN TAKEOVER (PAUSE/RESUME SYSTEM)
-// ==========================================
-const pausedChats = new Set(); // Yahan un chats ka record rahega jahan bot paused hai
-
-// Jab aap (Admin) apne mobile se reply karenge
-client.on('message_create', async (msg) => {
-    if (msg.fromMe) {
-        const chatId = msg.to;
-
-        // Agar admin '/resume' likhe, to bot dobara active ho jaye
-        if (msg.body === '/resume') {
-            pausedChats.delete(chatId);
-            console.log(`[RESUMED] Daina will now reply to: ${chatId}`);
-            // Ye message delete kar dega taake customer ko '/resume' likha hua na jaye (optional)
-            if (msg.hasMedia === false) {
-                msg.delete(true).catch(() => {}); 
-            }
-            return;
-        }
-
-        // Agar admin koi bhi normal message bhejta hai, to bot us chat ke liye Pause ho jaye
-        if (!pausedChats.has(chatId) && msg.body !== '/resume') {
-            pausedChats.add(chatId);
-            console.log(`[PAUSED] Admin replied manually. Bot is now silent for: ${chatId}`);
-        }
-    }
+// Generate QR Code ya Pairing Code (Logs mein dekhne ke liye)
+client.on('qr', (qr) => {
+    qrcode.generate(qr, { small: true });
+    console.log('QR Code generated. Agar scan nahi karna to neeche aane wale Pairing Code ka intezar karein.');
 });
 
-// Pairing Code Logic
-client.on('qr', async (qr) => {
-    const phoneNumber = process.env.PHONE_NUMBER; 
-    
-    if (phoneNumber) {
-        console.log(`Requesting pairing code for number: ${phoneNumber}...`);
-        try {
-            const code = await client.requestPairingCode(phoneNumber);
-            console.log('\n=========================================');
-            console.log(`>> WA PAIRING CODE: ${code} <<`);
-            console.log('=========================================\n');
-        } catch (err) {
-            console.error('Failed to request pairing code:', err);
-        }
-    } else {
-        qrcode.generate(qr, { small: true });
-    }
-});
-
+// Jab bot successfully connect ho jaye
 client.on('ready', () => {
-    console.log('Client is ready! Daina AI is ONLINE.');
+    console.log('==========================================');
+    console.log('DAINA AI IS READY AND CONNECTED! 🚀');
+    console.log('==========================================');
 });
 
-// Handle Incoming Customer Messages
-client.on('message', async (msg) => {
-    // Ignore status updates and groups
-    if (msg.from === 'status@broadcast') return;
-    if (msg.from.includes('@g.us')) return;
-
-    // 🛑 AGAR CHAT PAUSED HAI TO AI REPLY NAHI KAREGA
-    if (pausedChats.has(msg.from)) {
-        return; 
+// Message Handling & Daina Persona
+client.on('message_create', async (msg) => {
+    // 1. MANUAL PAUSE SYSTEM: Agar aap khud reply karte hain
+    if (msg.fromMe) {
+        if (msg.body.toLowerCase() === '!bot on') {
+            isBotActive = true;
+            console.log('Bot dobara ACTIVE kar diya gaya hai.');
+        } else if (msg.body.toLowerCase() === '!bot off') {
+            isBotActive = false;
+            console.log('Bot PAUSED kar diya gaya hai.');
+        } else if (isBotActive && !msg.body.startsWith('!')) {
+            // Agar aap koi aam message bhejte hain, to bot khud-ba-khud pause ho jayega
+            isBotActive = false;
+            console.log('Aapka manual message detect hua hai. Bot ab PAUSED hai. Dobara chalane ke liye "!bot on" likhein.');
+        }
+        return; // Apne messages par bot ko reply karne se rokna
     }
 
-    console.log(`Message from ${msg.from}: ${msg.body}`);
+    // Status updates ya group messages ko ignore karna (Sirf personal messages par reply karega)
+    if (msg.isStatus || msg.from.includes('@g.us')) return;
+
+    // Agar bot paused hai, to koi reply nahi karega
+    if (!isBotActive) return;
 
     try {
-        const prompt = msg.body;
+        // Gemini AI Model Initialize
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+
+        // Daina AI Persona (System Prompt)
+        const systemPrompt = `You are Daina, an AI-powered WhatsApp assistant. 
+        Your tone is friendly, helpful, and professional. 
+        Introduce our services politely when asked. 
+        CRITICAL RULE: If the user asks about pricing or costs, do NOT give numbers. Always reply with exactly: "Please contact my owner for specific pricing details."
+        Keep responses concise and easy to read on WhatsApp.`;
+
+        const prompt = `${systemPrompt}\n\nUser Message: ${msg.body}`;
+
+        // Generate response from Gemini
         const result = await model.generateContent(prompt);
-        const responseText = result.response.text();
-        
-        await msg.reply(responseText);
+        const response = result.response.text();
+
+        // Send reply to user
+        await msg.reply(response);
+        console.log(`Reply sent to ${msg.from}`);
+
     } catch (error) {
-        console.error('AI Error:', error);
+        console.error('Error generating AI response:', error);
+        // Ehtiyatan agar API ka koi masla aaye
+        // await msg.reply('Sorry, I am currently facing a technical issue. Please try again later.'); 
     }
 });
 
+// Client Start
 client.initialize();
+
+// Heroku Pairing Code Request (Phone Number se)
+if (process.env.PHONE_NUMBER) {
+    setTimeout(async () => {
+        try {
+            const pairingCode = await client.requestPairingCode(process.env.PHONE_NUMBER);
+            console.log(`\n==========================================`);
+            console.log(`YOUR WA PAIRING CODE IS: ${pairingCode}`);
+            console.log(`==========================================\n`);
+        } catch (error) {
+            console.log('Pairing code requested or already authenticated.');
+        }
+    }, 5000); // 5 seconds delay to ensure Puppeteer is ready
+}

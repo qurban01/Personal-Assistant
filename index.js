@@ -1,14 +1,13 @@
 const { Client, LocalAuth } = require('whatsapp-web.js');
-const qrcode = require('qrcode-terminal');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 // Gemini API Setup
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-// Bot Status
 let isBotActive = true;
+let pairingCodeRequested = false; // Code bar bar mangne se rokne ke liye
 
-// WhatsApp Client Setup (Hardcoded Path & MEMORY FIX)
+// WhatsApp Client Setup
 const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: {
@@ -30,22 +29,36 @@ const client = new Client({
     }
 });
 
+// 🚨 BINA TIMER WALA NAYA PAIRING SYSTEM
+client.on('qr', async (qr) => {
+    if (process.env.PHONE_NUMBER && !pairingCodeRequested) {
+        pairingCodeRequested = true;
+        try {
+            console.log('WhatsApp is ready! Fetching your Pairing Code...');
+            const pairingCode = await client.requestPairingCode(process.env.PHONE_NUMBER);
+            console.log(`\n==========================================`);
+            console.log(`YOUR WA PAIRING CODE IS: ${pairingCode}`);
+            console.log(`==========================================\n`);
+        } catch (error) {
+            console.log('Error getting pairing code:', error.message);
+        }
+    } else if (!process.env.PHONE_NUMBER) {
+         console.log('⚠️ ALERT: PHONE_NUMBER missing in Heroku Config Vars! Pura number dalein (e.g., 923001234567)');
+    }
+});
+
 client.on('ready', () => {
     console.log('==========================================');
     console.log('DAINA AI IS READY AND CONNECTED! 🚀');
     console.log('==========================================');
 });
 
-// Message Handling
 client.on('message_create', async (msg) => {
-    // 🚨 1. Purani chats ko ignore karein jab WhatsApp sync ho raha ho (RAM bachane ke liye)
     const messageTime = msg.timestamp * 1000;
     if (Date.now() - messageTime > 60000) return; 
 
-    // 🚨 2. Groups aur Status ko hamesha ignore karein
     if (msg.isStatus || msg.from.includes('@g.us')) return;
 
-    // 3. Manual Pause System
     if (msg.fromMe) {
         if (msg.body.toLowerCase() === '!bot on') {
             isBotActive = true;
@@ -55,7 +68,7 @@ client.on('message_create', async (msg) => {
             console.log('Bot PAUSED kar diya gaya hai.');
         } else if (isBotActive && !msg.body.startsWith('!')) {
             isBotActive = false;
-            console.log('Aapka manual message detect hua hai. Bot ab PAUSED hai. Dobara chalane ke liye "!bot on" likhein.');
+            console.log('Manual message detected. Bot PAUSED.');
         }
         return; 
     }

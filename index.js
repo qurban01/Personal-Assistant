@@ -8,18 +8,25 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 // Bot Status (Manual Reply Pause System)
 let isBotActive = true;
 
-// WhatsApp Client Setup (Hardcoded Heroku Path Fix)
+// WhatsApp Client Setup (Hardcoded Path & MEMORY OPTIMIZATION FIX)
 const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: {
-        // Yahan humne Heroku ke naye Chrome ka exact physical rasta fix kar diya hai
+        // Exact Heroku Chrome Path
         executablePath: process.env.CHROME_BIN || process.env.GOOGLE_CHROME_BIN || '/app/.chrome-for-testing/chrome-linux64/chrome',
+        // Extreme Memory Saving Arguments for Heroku 512MB Limit
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
             '--disable-dev-shm-usage',
+            '--disable-accelerated-2d-canvas',
+            '--no-first-run',
+            '--no-zygote',
             '--disable-gpu',
-            '--no-zygote'
+            '--disable-software-rasterizer',
+            '--disable-extensions',
+            '--single-process', 
+            '--mute-audio'
         ]
     }
 });
@@ -52,10 +59,10 @@ client.on('message_create', async (msg) => {
             isBotActive = false;
             console.log('Aapka manual message detect hua hai. Bot ab PAUSED hai. Dobara chalane ke liye "!bot on" likhein.');
         }
-        return; // Apne messages par bot ko reply karne se rokna
+        return; 
     }
 
-    // Status updates ya group messages ko ignore karna (Sirf personal messages par reply karega)
+    // Status updates ya group messages ko ignore karna
     if (msg.isStatus || msg.from.includes('@g.us')) return;
 
     // Agar bot paused hai, to koi reply nahi karega
@@ -101,5 +108,5 @@ if (process.env.PHONE_NUMBER) {
         } catch (error) {
             console.log('Pairing code requested or already authenticated.');
         }
-    }, 5000); // 5 seconds delay to ensure Puppeteer is ready
+    }, 5000); 
 }

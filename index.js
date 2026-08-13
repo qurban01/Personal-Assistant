@@ -8,11 +8,10 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 // Bot Status (Manual Reply Pause System)
 let isBotActive = true;
 
-// WhatsApp Client Setup with Heroku Chrome Fix
+// WhatsApp Client Setup (Clean Setup without Path issues)
 const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: {
-        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || process.env.GOOGLE_CHROME_BIN || process.env.CHROME_BIN,
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
@@ -83,8 +82,6 @@ client.on('message_create', async (msg) => {
 
     } catch (error) {
         console.error('Error generating AI response:', error);
-        // Ehtiyatan agar API ka koi masla aaye
-        // await msg.reply('Sorry, I am currently facing a technical issue. Please try again later.'); 
     }
 });
 

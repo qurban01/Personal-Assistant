@@ -8,11 +8,11 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 // Bot Status (Manual Reply Pause System)
 let isBotActive = true;
 
-// WhatsApp Client Setup (With Correct Heroku Buildpack Path)
+// WhatsApp Client Setup (Heroku Buildpack Path)
 const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: {
-        executablePath: process.env.CHROME_BIN || process.env.GOOGLE_CHROME_BIN,
+        executablePath: process.env.GOOGLE_CHROME_BIN || process.env.CHROME_BIN,
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',

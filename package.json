@@ -4,7 +4,7 @@
   "description": "WhatsApp AI Bot using whatsapp-web.js and Gemini",
   "main": "index.js",
   "scripts": {
-    "start": "node --max-old-space-size=256 index.js"
+    "start": "node index.js"
   },
   "dependencies": {
     "whatsapp-web.js": "^1.23.0",

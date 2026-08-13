@@ -5,9 +5,9 @@ const { GoogleGenerativeAI } = require('@google/generative-ai');
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 let isBotActive = true;
-let pairingCodeRequested = false; // Code bar bar mangne se rokne ke liye
+let pairingCodeRequested = false;
 
-// WhatsApp Client Setup
+// WhatsApp Client Setup (Hardcoded Heroku Chrome Path)
 const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: {
@@ -22,14 +22,12 @@ const client = new Client({
             '--disable-gpu',
             '--disable-software-rasterizer',
             '--disable-extensions',
-            '--single-process', 
-            '--mute-audio',
-            '--disk-cache-size=0'
+            '--mute-audio'
         ]
     }
 });
 
-// 🚨 BINA TIMER WALA NAYA PAIRING SYSTEM
+// Automatic Pairing Code Generator
 client.on('qr', async (qr) => {
     if (process.env.PHONE_NUMBER && !pairingCodeRequested) {
         pairingCodeRequested = true;
@@ -43,7 +41,7 @@ client.on('qr', async (qr) => {
             console.log('Error getting pairing code:', error.message);
         }
     } else if (!process.env.PHONE_NUMBER) {
-         console.log('⚠️ ALERT: PHONE_NUMBER missing in Heroku Config Vars! Pura number dalein (e.g., 923001234567)');
+         console.log('⚠️ ALERT: PHONE_NUMBER missing in Heroku Config Vars! Number dalein (e.g., 923001234567)');
     }
 });
 
@@ -53,10 +51,12 @@ client.on('ready', () => {
     console.log('==========================================');
 });
 
+// Message Handling & Group Filter
 client.on('message_create', async (msg) => {
     const messageTime = msg.timestamp * 1000;
     if (Date.now() - messageTime > 60000) return; 
 
+    // Groups aur Status ko mukammal ignore karna
     if (msg.isStatus || msg.from.includes('@g.us')) return;
 
     if (msg.fromMe) {

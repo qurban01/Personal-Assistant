@@ -4,7 +4,8 @@
   "description": "WhatsApp AI Bot using whatsapp-web.js and Gemini",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "heroku-postbuild": "npx puppeteer browsers install chrome"
   },
   "dependencies": {
     "whatsapp-web.js": "^1.23.0",

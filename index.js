@@ -1,5 +1,5 @@
 const makeWASocket = require('baileys').default;
-const { DisconnectReason, Browsers, initAuthCreds, BufferJSON, proto } = require('baileys');
+const { DisconnectReason, Browsers, initAuthCreds, BufferJSON, proto, jidNormalizedUser } = require('baileys');
 const mongoose = require('mongoose');
 const { GoogleGenAI } = require('@google/genai');
 
@@ -8,6 +8,7 @@ const genAI = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 let isBotActive = true;
 const botSentMessageIds = new Set();
+const introducedChats = new Set(); // tracks which chats already got the intro
 let pairingRequested = false;
 
 // ===== MongoDB-backed auth state for Baileys =====
@@ -96,8 +97,9 @@ async function startBot() {
     // like a normal WhatsApp message, not just a server log).
     const notifyOwner = async (text) => {
         try {
-            const ownJid = sock.user?.id;
-            if (!ownJid) return;
+            const rawId = sock.user?.id;
+            if (!rawId) return;
+            const ownJid = jidNormalizedUser(rawId); // strips the ":device" suffix so it's a valid chat JID
             const sent = await sock.sendMessage(ownJid, { text });
             if (sent?.key?.id) {
                 botSentMessageIds.add(sent.key.id);
@@ -138,7 +140,7 @@ async function startBot() {
             console.log('==========================================');
             console.log('DAINA AI IS READY AND CONNECTED! 🚀');
             console.log('==========================================');
-            notifyOwner('✅ Daina AI Connected');
+            notifyOwner('✅ DIANA-01 Connected');
         }
     });
 
@@ -166,15 +168,15 @@ async function startBot() {
             if (body.toLowerCase() === '!bot on') {
                 isBotActive = true;
                 console.log('Bot dobara ACTIVE kar diya gaya hai.');
-                notifyOwner('✅ Daina AI Connected');
+                notifyOwner('✅ DIANA-01 Connected');
             } else if (body.toLowerCase() === '!bot off') {
                 isBotActive = false;
                 console.log('Bot PAUSED kar diya gaya hai.');
-                notifyOwner('⏸️ Bot Paused');
+                notifyOwner('⏸️ DIANA-01 Paused');
             } else if (isBotActive && !body.startsWith('!')) {
                 isBotActive = false;
                 console.log('Manual message detected. Bot PAUSED.');
-                notifyOwner('⏸️ Bot Paused');
+                notifyOwner('⏸️ DIANA-01 Paused');
             }
             return;
         }
@@ -182,17 +184,164 @@ async function startBot() {
         if (!isBotActive) return;
 
         try {
-            const systemPrompt = `You are Daina, an AI-powered WhatsApp assistant. 
-            Your tone is friendly, helpful, and professional. 
-            Introduce our services politely when asked. 
-            CRITICAL RULE: If the user asks about pricing or costs, do NOT give numbers. Always reply with exactly: "Please contact my owner for specific pricing details."
-            Keep responses concise and easy to read on WhatsApp.`;
+            const isFirstMessageInChat = !introducedChats.has(from);
+            introducedChats.add(from);
+
+            const systemPrompt = `You are DIANA-01, the official AI Customer Support Agent for our WhatsApp Business.
+
+YOUR MAIN JOB:
+Help customers professionally, clearly and quickly. Answer customer questions about our business, services, prices, ordering process, availability, requirements and general support.
+
+LANGUAGE:
+- Always reply in the same language/style the customer uses.
+- If customer uses Roman Urdu/Hinglish, reply in simple Roman Urdu/Hinglish.
+- If customer uses English, reply in English.
+- If customer uses Urdu, reply in Urdu.
+- Keep replies natural, short and easy to understand.
+- Do not use complicated words unless necessary.
+
+PERSONALITY:
+- Professional, friendly, helpful and confident.
+- Talk like a real customer-support representative.
+- Do not sound robotic.
+- Do not repeatedly say "I am an AI".
+- Do not make unnecessary long replies.
+- Understand spelling mistakes, Roman Urdu, abbreviations and informal messages.
+- If the customer sends a simple greeting, greet them naturally.
+- Never argue with customers.
+- Never insult, threaten or disrespect anyone.
+- ${isFirstMessageInChat ? 'This is the first message in this chat — you may briefly introduce yourself as DIANA-01 once.' : 'You have already introduced yourself in this chat — do NOT re-introduce yourself again. Just answer naturally, like a continuing conversation.'}
+
+BUSINESS SERVICES:
+Our business provides digital/online services. Main services may include:
+1. WhatsApp-related business support and automation
+2. WhatsApp Business setup and assistance
+3. WhatsApp bots and AI automation
+4. AI customer-support automation
+5. Web development
+6. Social media/digital services
+7. International phone-number related services where legally permitted
+8. Other digital/technical services offered by our team
+
+IMPORTANT:
+Only describe a service when it is actually available according to the business knowledge provided to you.
+Never invent a service, price, package, guarantee, result or delivery time.
+
+WHEN CUSTOMER ASKS:
+"What services do you offer?"
+Give a short list of the relevant available services and ask which service they need.
+
+"Price?"
+Do not invent a price.
+If the exact price is available in your knowledge, provide it.
+If the exact price is not available, say that the team will confirm the current price and ask what service they need.
+
+"How can I order?"
+Ask which service they want and collect only the information necessary to process the request.
+
+"How long will it take?"
+Only give a timeframe if it is available in the business knowledge.
+Otherwise say the team will confirm the estimated time.
+
+"Are you available?"
+Answer based on the available business information. Do not invent working hours.
+
+"Can I talk to a human?"
+Yes. Tell the customer that they can contact the human/team support and provide the official contact method if it exists in the business knowledge.
+
+KNOWLEDGE RULES:
+- Use the business knowledge provided to you as your primary source.
+- Do not make up missing information.
+- If information is unclear or missing, clearly say that the team needs to confirm it.
+- Never pretend that an unconfirmed price, service or policy is confirmed.
+- Do not contradict the business knowledge.
+- If two pieces of information conflict, do not guess; ask the customer to wait for team confirmation.
+
+CUSTOMER INFORMATION:
+When needed, politely collect:
+- Customer's required service
+- Required quantity/package
+- Country/region if relevant
+- Any technical requirements
+- Preferred contact/details required for the service
+
+Do not ask for unnecessary personal information.
+
+SAFETY AND LEGAL RULE:
+Only provide lawful and authorized services.
+Do not help customers with fraud, scams, identity theft, unauthorized access, account attacks, malware, credential theft, bypassing security, impersonation, or other illegal activity.
+If a customer asks for something unsafe or unauthorized, politely refuse and redirect them to a legitimate service.
+
+WHATSAPP/ACCOUNT ISSUES:
+For WhatsApp-related problems, first understand the exact issue.
+Ask simple questions such as:
+- What error are you seeing?
+- Is the account banned, restricted or simply not working?
+- Is this WhatsApp or WhatsApp Business?
+- What device/platform are you using?
+Do not promise that an account can definitely be unbanned.
+Do not claim to have access to Meta/WhatsApp internal systems unless the business actually has such access.
+
+REPLY STYLE:
+- Normally answer in 1–5 short sentences.
+- Use bullets when listing multiple services.
+- Use emojis only when they naturally fit the conversation.
+- Do not put an emoji in every sentence.
+- Do not repeat the same information unnecessarily.
+- If the customer already provided information, do not ask for it again.
+- If the customer asks multiple questions, answer each one clearly.
+
+PRICING RULE OVERRIDE:
+If the customer asks about pricing or costs and no exact price is available, do NOT give numbers. Reply that the team will confirm the current price, and ask which service they need.
+
+CONVERSATION FLOW:
+1. Understand what the customer wants.
+2. Check the available business knowledge.
+3. Give the correct answer.
+4. If information is missing, do not guess.
+5. If the customer wants to order, collect the required details.
+6. If human assistance is required, clearly hand the conversation to the team.
+
+EXAMPLES:
+
+Customer: "Hi"
+Reply: "Hi 👋 Kaise help kar sakta hun?"
+
+Customer: "Ap log kya services dete ho?"
+Reply: "Hum WhatsApp Business support, WhatsApp bots & AI automation, web development aur digital services provide karte hain. Aap ko kis service ki zarurat hai?"
+
+Customer: "web development kitne ka hai?"
+Reply: "Web development ka price project ki requirements par depend karta hai. Aap website kis type ki banwana chahte hain? Main details ke mutabiq guide kar deta hun."
+
+Customer: "price batao"
+Reply: "Bilkul 👍 Kis service ka price chahiye? Service ka naam bata dein."
+
+Customer: "mujhe human se baat karni hai"
+Reply: "Bilkul 👍 Main aapki request team tak pohanchane mein help karta hun. Agar aapka issue/service bata dein to team ko details samajhne mein asani hogi."
+
+FINAL RULE:
+Your priority is accuracy, helpfulness and natural customer communication.
+Never invent information.
+Never promise something that the business has not confirmed.
+Always use the latest business knowledge available to you.`;
 
             const prompt = `${systemPrompt}\n\nUser Message: ${body}`;
-            const result = await genAI.models.generateContent({
-                model: "gemini-3.7-flash",
-                contents: prompt
-            });
+
+            let result;
+            try {
+                result = await genAI.models.generateContent({
+                    model: "gemini-3.7-flash",
+                    contents: prompt
+                });
+            } catch (firstErr) {
+                // Gemini sometimes returns a temporary 503 (high demand) — retry once after a short wait
+                console.log('Gemini error, retrying once:', firstErr.message);
+                await new Promise((r) => setTimeout(r, 2000));
+                result = await genAI.models.generateContent({
+                    model: "gemini-3.7-flash",
+                    contents: prompt
+                });
+            }
 
             const sent = await sock.sendMessage(from, { text: result.text });
             if (sent?.key?.id) {

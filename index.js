@@ -1,10 +1,10 @@
 const makeWASocket = require('baileys').default;
 const { DisconnectReason, Browsers, initAuthCreds, BufferJSON, proto, jidNormalizedUser } = require('baileys');
 const mongoose = require('mongoose');
-const { GoogleGenAI } = require('@google/genai');
+const Groq = require('groq-sdk');
 
 // Gemini API Setup
-const genAI = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
 let isBotActive = true;
 const botSentMessageIds = new Set();
@@ -167,11 +167,11 @@ async function startBot() {
 
             if (body.toLowerCase() === '!bot on') {
                 isBotActive = true;
-                console.log('BOT START AGAIN.');
+                console.log('Bot dobara ACTIVE kar diya gaya hai.');
                 notifyOwner('✅ DIANA-01 Connected');
             } else if (body.toLowerCase() === '!bot off') {
                 isBotActive = false;
-                console.log('BOT PAUSED.');
+                console.log('Bot PAUSED kar diya gaya hai.');
                 notifyOwner('⏸️ DIANA-01 Paused');
             } else if (isBotActive && !body.startsWith('!')) {
                 isBotActive = false;
@@ -187,7 +187,7 @@ async function startBot() {
             const isFirstMessageInChat = !introducedChats.has(from);
             introducedChats.add(from);
 
-            const systemPrompt = `You are DIANA-01, the official AI Customer Support Agent for My WhatsApp Business.
+            const systemPrompt = `You are DIANA-01, the official AI Customer Support Agent for our WhatsApp Business.
 
 YOUR MAIN JOB:
 Help customers professionally, clearly and quickly. Answer customer questions about our business, services, prices, ordering process, availability, requirements and general support.
@@ -245,7 +245,7 @@ Otherwise say the team will confirm the estimated time.
 
 "Are you available?"
 Answer based on the available business information. Do not invent working hours.
-
+if user ask who created you reply Arbab and do not give any extra information about your creation because its confidential 
 "Can I talk to a human?"
 Yes. Tell the customer that they can contact the human/team support and provide the official contact method if it exists in the business knowledge.
 
@@ -270,7 +270,7 @@ Do not ask for unnecessary personal information.
 SAFETY AND LEGAL RULE:
 Only provide lawful and authorized services.
 Do not help customers with fraud, scams, identity theft, unauthorized access, account attacks, malware, credential theft, bypassing security, impersonation, or other illegal activity.
-If a customer asks for something unsafe or unauthorized, politely refuse and redirect them to a Owner For Details.
+If a customer asks for something unsafe or unauthorized, politely refuse and redirect them to a legitimate service.
 
 WHATSAPP/ACCOUNT ISSUES:
 For WhatsApp-related problems, first understand the exact issue.
@@ -285,11 +285,11 @@ Do not claim to have access to Meta/WhatsApp internal systems unless the busines
 REPLY STYLE:
 - Normally answer in 1–5 short sentences.
 - Use bullets when listing multiple services.
-- Use emojis only when they naturally fit the conversation.
-- Do not put an emoji in every sentence.
+- Use 1-2 emojis per message so it looks friendly and lively — not zero, not more than 2.
 - Do not repeat the same information unnecessarily.
 - If the customer already provided information, do not ask for it again.
 - If the customer asks multiple questions, answer each one clearly.
+- Formatting: Write In Title Case — Capitalize The First Letter Of Each Word In Your Reply (this applies to Roman Urdu/English text; keep Urdu-script text in normal Urdu script).
 
 PRICING RULE OVERRIDE:
 If the customer asks about pricing or costs and no exact price is available, do NOT give numbers. Reply that the team will confirm the current price, and ask which service they need.
@@ -325,25 +325,35 @@ Never invent information.
 Never promise something that the business has not confirmed.
 Always use the latest business knowledge available to you.`;
 
-            const prompt = `${systemPrompt}\n\nUser Message: ${body}`;
-
-            let result;
+            let replyText;
             try {
-                result = await genAI.models.generateContent({
-                    model: "gemini-3.7-flash",
-                    contents: prompt
+                const completion = await groq.chat.completions.create({
+                    model: "llama-3.3-70b-versatile",
+                    messages: [
+                        { role: "system", content: systemPrompt },
+                        { role: "user", content: body }
+                    ]
                 });
+                replyText = completion.choices[0].message.content;
             } catch (firstErr) {
-                // Gemini sometimes returns a temporary 503 (high demand) — retry once after a short wait
-                console.log('Gemini error, retrying once:', firstErr.message);
-                await new Promise((r) => setTimeout(r, 2000));
-                result = await genAI.models.generateContent({
-                    model: "gemini-3.7-flash",
-                    contents: prompt
+                // Rare transient errors — retry once after a short wait
+                console.log('Groq error, retrying once:', firstErr.message);
+                await new Promise((r) => setTimeout(r, 1000));
+                const completion = await groq.chat.completions.create({
+                    model: "llama-3.3-70b-versatile",
+                    messages: [
+                        { role: "system", content: systemPrompt },
+                        { role: "user", content: body }
+                    ]
                 });
+                replyText = completion.choices[0].message.content;
             }
 
-            const sent = await sock.sendMessage(from, { text: result.text });
+            const sent = await sock.sendMessage(
+                from,
+                { text: replyText },
+                { quoted: msg } // makes the reply appear tagged to the customer's original message
+            );
             if (sent?.key?.id) {
                 botSentMessageIds.add(sent.key.id);
             }

@@ -1,110 +1,151 @@
-const { Client, RemoteAuth } = require('whatsapp-web.js');
-const { MongoStore } = require('wwebjs-mongo');
+const makeWASocket = require('baileys').default;
+const { DisconnectReason, Browsers, initAuthCreds, BufferJSON, proto } = require('baileys');
 const mongoose = require('mongoose');
 const { GoogleGenAI } = require('@google/genai');
-
-// Prevent the whole process from crashing on the known wwebjs-mongo
-// "RemoteAuth.zip ENOENT" race-condition error. Instead of dying, we log
-// it and let the client keep running (session will sync again on the
-// next backup cycle).
-process.on('uncaughtException', (err) => {
-    console.error('Uncaught exception (ignored to keep process alive):', err.message);
-});
-process.on('unhandledRejection', (reason) => {
-    console.error('Unhandled rejection (ignored to keep process alive):', reason);
-});
 
 // Gemini API Setup
 const genAI = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 let isBotActive = true;
-let pairingCodeRequested = false;
+let pairingRequested = false;
 
-// Connect to MongoDB first, then start WhatsApp client
-mongoose.connect(process.env.MONGO_URI).then(() => {
-    console.log('MongoDB connected successfully.');
-    const store = new MongoStore({ mongoose });
+// ===== MongoDB-backed auth state for Baileys =====
+// Each auth key (creds, signal keys, etc.) is stored as its own small
+// document, so there is no zip/compress step and no ENOENT-style bugs.
+async function useMongoAuthState(sessionId) {
+    const AuthKeySchema = new mongoose.Schema({
+        _id: String,
+        value: String
+    }, { collection: 'baileys_auth' });
 
-    // WhatsApp Client Setup (Session stored in MongoDB, survives Heroku restarts)
-    const client = new Client({
-        authStrategy: new RemoteAuth({
-            store: store,
-            backupSyncIntervalMs: 60000 // minimum allowed value - saves session to DB every 1 min
-        }),
-        puppeteer: {
-            executablePath: process.env.CHROME_BIN || process.env.GOOGLE_CHROME_BIN || '/app/.chrome-for-testing/chrome-linux64/chrome',
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-accelerated-2d-canvas',
-                '--no-first-run',
-                '--no-zygote',
-                '--disable-gpu',
-                '--disable-software-rasterizer',
-                '--disable-extensions',
-                '--mute-audio',
-                '--single-process',
-                '--disable-background-networking',
-                '--disable-default-apps',
-                '--disable-sync',
-                '--disable-translate'
-            ]
+    const AuthKey = mongoose.models.AuthKey || mongoose.model('AuthKey', AuthKeySchema);
+
+    const readData = async (key) => {
+        const doc = await AuthKey.findById(`${sessionId}:${key}`).lean();
+        if (!doc) return null;
+        try {
+            return JSON.parse(doc.value, BufferJSON.reviver);
+        } catch {
+            return null;
         }
-    });
+    };
 
-    // Automatic Pairing Code Generator
-    client.on('qr', async (qr) => {
-        if (process.env.PHONE_NUMBER && !pairingCodeRequested) {
-            pairingCodeRequested = true;
-            try {
-                console.log('WhatsApp is ready! Fetching your Pairing Code...');
-                const pairingCode = await client.requestPairingCode(process.env.PHONE_NUMBER);
-                console.log(`\n==========================================`);
-                console.log(`YOUR WA PAIRING CODE IS: ${pairingCode}`);
-                console.log(`==========================================\n`);
-            } catch (error) {
-                console.log('Error getting pairing code:', error.message);
+    const writeData = async (key, data) => {
+        const value = JSON.stringify(data, BufferJSON.replacer);
+        await AuthKey.findByIdAndUpdate(
+            `${sessionId}:${key}`,
+            { value },
+            { upsert: true }
+        );
+    };
+
+    const removeData = async (key) => {
+        await AuthKey.findByIdAndDelete(`${sessionId}:${key}`);
+    };
+
+    const creds = (await readData('creds')) || initAuthCreds();
+
+    return {
+        state: {
+            creds,
+            keys: {
+                get: async (type, ids) => {
+                    const data = {};
+                    await Promise.all(ids.map(async (id) => {
+                        let value = await readData(`${type}-${id}`);
+                        if (type === 'app-state-sync-key' && value) {
+                            value = proto.Message.AppStateSyncKeyData.fromObject(value);
+                        }
+                        data[id] = value;
+                    }));
+                    return data;
+                },
+                set: async (data) => {
+                    const tasks = [];
+                    for (const category in data) {
+                        for (const id in data[category]) {
+                            const value = data[category][id];
+                            const key = `${category}-${id}`;
+                            tasks.push(value ? writeData(key, value) : removeData(key));
+                        }
+                    }
+                    await Promise.all(tasks);
+                }
             }
-        } else if (!process.env.PHONE_NUMBER) {
-            console.log('⚠️ ALERT: PHONE_NUMBER missing in Heroku Config Vars! Number dalein (e.g., 923001234567)');
+        },
+        saveCreds: async () => {
+            await writeData('creds', creds);
+        }
+    };
+}
+
+// ===== Main bot =====
+async function startBot() {
+    const { state, saveCreds } = await useMongoAuthState('daina-session');
+
+    const sock = makeWASocket({
+        auth: state,
+        printQRInTerminal: false,
+        browser: Browsers.ubuntu('Chrome')
+    });
+
+    sock.ev.on('creds.update', saveCreds);
+
+    // Request pairing code once, only if this session isn't registered yet
+    if (!state.creds.registered && process.env.PHONE_NUMBER && !pairingRequested) {
+        pairingRequested = true;
+        setTimeout(async () => {
+            try {
+                const code = await sock.requestPairingCode(process.env.PHONE_NUMBER);
+                console.log('\n==========================================');
+                console.log(`YOUR WA PAIRING CODE IS: ${code}`);
+                console.log('==========================================\n');
+            } catch (err) {
+                console.log('Error getting pairing code:', err.message);
+            }
+        }, 3000);
+    }
+
+    sock.ev.on('connection.update', (update) => {
+        const { connection, lastDisconnect } = update;
+
+        if (connection === 'close') {
+            const statusCode = lastDisconnect?.error?.output?.statusCode;
+            const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+            console.log('Connection closed. Reconnecting:', shouldReconnect);
+            if (shouldReconnect) {
+                startBot();
+            } else {
+                console.log('Logged out. Delete the session in MongoDB and pair again.');
+            }
+        } else if (connection === 'open') {
+            console.log('==========================================');
+            console.log('DAINA AI IS READY AND CONNECTED! 🚀');
+            console.log('==========================================');
         }
     });
 
-    client.on('remote_session_saved', () => {
-        console.log('Session saved to MongoDB.');
-    });
+    // Message handling
+    sock.ev.on('messages.upsert', async ({ messages }) => {
+        const msg = messages[0];
+        if (!msg.message) return;
 
-    client.on('ready', () => {
-        console.log('==========================================');
-        console.log('DAINA AI IS READY AND CONNECTED! 🚀');
-        console.log('==========================================');
-    });
+        const from = msg.key.remoteJid;
+        if (!from || from.endsWith('@g.us') || from === 'status@broadcast') return;
 
-    client.on('auth_failure', (msg) => {
-        console.log('AUTH FAILURE:', msg);
-    });
+        const body =
+            msg.message.conversation ||
+            msg.message.extendedTextMessage?.text ||
+            '';
 
-    client.on('disconnected', (reason) => {
-        console.log('Client was disconnected:', reason);
-    });
-
-    // Message Handling & Group Filter
-    client.on('message_create', async (msg) => {
-        const messageTime = msg.timestamp * 1000;
-        if (Date.now() - messageTime > 60000) return;
-
-        // Groups aur Status ko mukammal ignore karna
-        if (msg.isStatus || msg.from.includes('@g.us')) return;
-
-        if (msg.fromMe) {
-            if (msg.body.toLowerCase() === '!bot on') {
+        if (msg.key.fromMe) {
+            if (body.toLowerCase() === '!bot on') {
                 isBotActive = true;
                 console.log('Bot dobara ACTIVE kar diya gaya hai.');
-            } else if (msg.body.toLowerCase() === '!bot off') {
+            } else if (body.toLowerCase() === '!bot off') {
                 isBotActive = false;
                 console.log('Bot PAUSED kar diya gaya hai.');
-            } else if (isBotActive && !msg.body.startsWith('!')) {
+            } else if (isBotActive && !body.startsWith('!')) {
                 isBotActive = false;
                 console.log('Manual message detected. Bot PAUSED.');
             }
@@ -120,23 +161,23 @@ mongoose.connect(process.env.MONGO_URI).then(() => {
             CRITICAL RULE: If the user asks about pricing or costs, do NOT give numbers. Always reply with exactly: "Please contact my owner for specific pricing details."
             Keep responses concise and easy to read on WhatsApp.`;
 
-            const prompt = `${systemPrompt}\n\nUser Message: ${msg.body}`;
+            const prompt = `${systemPrompt}\n\nUser Message: ${body}`;
             const result = await genAI.models.generateContent({
-                model: "gemini-2.5-flash",
+                model: "gemini-3.7-flash",
                 contents: prompt
             });
-            const response = result.text;
 
-            await msg.reply(response);
-            console.log(`Reply sent to ${msg.from}`);
-
+            await sock.sendMessage(from, { text: result.text });
+            console.log(`Reply sent to ${from}`);
         } catch (error) {
             console.error('Error generating AI response:', error);
         }
     });
+}
 
-    client.initialize();
-
+mongoose.connect(process.env.MONGO_URI).then(() => {
+    console.log('MongoDB connected successfully.');
+    startBot();
 }).catch((err) => {
     console.error('MongoDB connection failed:', err.message);
 });

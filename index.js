@@ -1,7 +1,7 @@
 const { Client, RemoteAuth } = require('whatsapp-web.js');
 const { MongoStore } = require('wwebjs-mongo');
 const mongoose = require('mongoose');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { GoogleGenAI } = require('@google/genai');
 
 // Prevent the whole process from crashing on the known wwebjs-mongo
 // "RemoteAuth.zip ENOENT" race-condition error. Instead of dying, we log
@@ -15,7 +15,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // Gemini API Setup
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const genAI = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 let isBotActive = true;
 let pairingCodeRequested = false;
@@ -114,7 +114,6 @@ mongoose.connect(process.env.MONGO_URI).then(() => {
         if (!isBotActive) return;
 
         try {
-            const model = genAI.getGenerativeModel({ model: "gemini-flash-latest" });
             const systemPrompt = `You are Daina, an AI-powered WhatsApp assistant. 
             Your tone is friendly, helpful, and professional. 
             Introduce our services politely when asked. 
@@ -122,8 +121,11 @@ mongoose.connect(process.env.MONGO_URI).then(() => {
             Keep responses concise and easy to read on WhatsApp.`;
 
             const prompt = `${systemPrompt}\n\nUser Message: ${msg.body}`;
-            const result = await model.generateContent(prompt);
-            const response = result.response.text();
+            const result = await genAI.models.generateContent({
+                model: "gemini-2.5-flash",
+                contents: prompt
+            });
+            const response = result.text;
 
             await msg.reply(response);
             console.log(`Reply sent to ${msg.from}`);

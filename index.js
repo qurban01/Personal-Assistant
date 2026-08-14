@@ -92,6 +92,21 @@ async function startBot() {
 
     sock.ev.on('creds.update', saveCreds);
 
+    // Sends a short status message to your own inbox (so it shows up
+    // like a normal WhatsApp message, not just a server log).
+    const notifyOwner = async (text) => {
+        try {
+            const ownJid = sock.user?.id;
+            if (!ownJid) return;
+            const sent = await sock.sendMessage(ownJid, { text });
+            if (sent?.key?.id) {
+                botSentMessageIds.add(sent.key.id);
+            }
+        } catch (err) {
+            console.log('Could not send owner notification:', err.message);
+        }
+    };
+
     // Request pairing code once, only if this session isn't registered yet
     if (!state.creds.registered && process.env.PHONE_NUMBER && !pairingRequested) {
         pairingRequested = true;
@@ -123,6 +138,7 @@ async function startBot() {
             console.log('==========================================');
             console.log('DAINA AI IS READY AND CONNECTED! 🚀');
             console.log('==========================================');
+            notifyOwner('✅ Daina AI Connected');
         }
     });
 
@@ -150,12 +166,15 @@ async function startBot() {
             if (body.toLowerCase() === '!bot on') {
                 isBotActive = true;
                 console.log('Bot dobara ACTIVE kar diya gaya hai.');
+                notifyOwner('✅ Daina AI Connected');
             } else if (body.toLowerCase() === '!bot off') {
                 isBotActive = false;
                 console.log('Bot PAUSED kar diya gaya hai.');
+                notifyOwner('⏸️ Bot Paused');
             } else if (isBotActive && !body.startsWith('!')) {
                 isBotActive = false;
                 console.log('Manual message detected. Bot PAUSED.');
+                notifyOwner('⏸️ Bot Paused');
             }
             return;
         }

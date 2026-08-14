@@ -7,6 +7,7 @@ const { GoogleGenAI } = require('@google/genai');
 const genAI = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 let isBotActive = true;
+const botSentMessageIds = new Set();
 let pairingRequested = false;
 
 // ===== MongoDB-backed auth state for Baileys =====
@@ -139,6 +140,13 @@ async function startBot() {
             '';
 
         if (msg.key.fromMe) {
+            // Ignore the bot's own auto-replies — otherwise the bot
+            // would detect its own reply as a "manual message" and pause itself.
+            if (botSentMessageIds.has(msg.key.id)) {
+                botSentMessageIds.delete(msg.key.id);
+                return;
+            }
+
             if (body.toLowerCase() === '!bot on') {
                 isBotActive = true;
                 console.log('Bot dobara ACTIVE kar diya gaya hai.');
@@ -167,7 +175,10 @@ async function startBot() {
                 contents: prompt
             });
 
-            await sock.sendMessage(from, { text: result.text });
+            const sent = await sock.sendMessage(from, { text: result.text });
+            if (sent?.key?.id) {
+                botSentMessageIds.add(sent.key.id);
+            }
             console.log(`Reply sent to ${from}`);
         } catch (error) {
             console.error('Error generating AI response:', error);

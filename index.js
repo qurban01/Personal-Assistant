@@ -1,5 +1,5 @@
 const makeWASocket = require('baileys').default;
-const { DisconnectReason, Browsers, initAuthCreds, BufferJSON, proto, jidNormalizedUser } = require('baileys');
+const { DisconnectReason, Browsers, initAuthCreds, BufferJSON, proto, jidNormalizedUser, fetchLatestBaileysVersion } = require('baileys');
 const mongoose = require('mongoose');
 const Groq = require('groq-sdk');
 
@@ -85,8 +85,12 @@ async function useMongoAuthState(sessionId) {
 async function startBot() {
     const { state, saveCreds } = await useMongoAuthState('daina-session');
 
+    const { version } = await fetchLatestBaileysVersion();
+    console.log('Using WhatsApp Web version:', version.join('.'));
+
     const sock = makeWASocket({
         auth: state,
+        version,
         printQRInTerminal: false,
         browser: Browsers.ubuntu('Chrome')
     });

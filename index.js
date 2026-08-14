@@ -3,6 +3,17 @@ const { MongoStore } = require('wwebjs-mongo');
 const mongoose = require('mongoose');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
+// Prevent the whole process from crashing on the known wwebjs-mongo
+// "RemoteAuth.zip ENOENT" race-condition error. Instead of dying, we log
+// it and let the client keep running (session will sync again on the
+// next backup cycle).
+process.on('uncaughtException', (err) => {
+    console.error('Uncaught exception (ignored to keep process alive):', err.message);
+});
+process.on('unhandledRejection', (reason) => {
+    console.error('Unhandled rejection (ignored to keep process alive):', reason);
+});
+
 // Gemini API Setup
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
@@ -18,7 +29,7 @@ mongoose.connect(process.env.MONGO_URI).then(() => {
     const client = new Client({
         authStrategy: new RemoteAuth({
             store: store,
-            backupSyncIntervalMs: 300000 // saves session to DB every 5 min
+            backupSyncIntervalMs: 60000 // minimum allowed value - saves session to DB every 1 min
         }),
         puppeteer: {
             executablePath: process.env.CHROME_BIN || process.env.GOOGLE_CHROME_BIN || '/app/.chrome-for-testing/chrome-linux64/chrome',
@@ -32,7 +43,12 @@ mongoose.connect(process.env.MONGO_URI).then(() => {
                 '--disable-gpu',
                 '--disable-software-rasterizer',
                 '--disable-extensions',
-                '--mute-audio'
+                '--mute-audio',
+                '--single-process',
+                '--disable-background-networking',
+                '--disable-default-apps',
+                '--disable-sync',
+                '--disable-translate'
             ]
         }
     });
@@ -63,6 +79,10 @@ mongoose.connect(process.env.MONGO_URI).then(() => {
         console.log('==========================================');
         console.log('DAINA AI IS READY AND CONNECTED! 🚀');
         console.log('==========================================');
+    });
+
+    client.on('auth_failure', (msg) => {
+        console.log('AUTH FAILURE:', msg);
     });
 
     client.on('disconnected', (reason) => {

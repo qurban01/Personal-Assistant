@@ -3,17 +3,19 @@ const { DisconnectReason, Browsers, initAuthCreds, BufferJSON, proto, jidNormali
 const mongoose = require('mongoose');
 const Groq = require('groq-sdk');
 
-// Gemini API Setup
+// Gemini API Setup (Groq)
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
-let isBotActive = true;
+// Bot State Controls
+let isGlobalBotActive = true; // Global ON/OFF button
+const pausedChats = new Map(); // Tracks individual chats paused for 5 minutes
+const PAUSE_DURATION = 5 * 60 * 1000; // 5 minutes in milliseconds
+
 const botSentMessageIds = new Set();
 const introducedChats = new Set(); // tracks which chats already got the intro
 let pairingRequested = false;
 
 // ===== MongoDB-backed auth state for Baileys =====
-// Each auth key (creds, signal keys, etc.) is stored as its own small
-// document, so there is no zip/compress step and no ENOENT-style bugs.
 async function useMongoAuthState(sessionId) {
     const AuthKeySchema = new mongoose.Schema({
         _id: String,
@@ -92,18 +94,18 @@ async function startBot() {
         auth: state,
         version,
         printQRInTerminal: false,
-        browser: Browsers.ubuntu('Chrome')
+        browser: Browsers.ubuntu('Chrome'),
+        syncFullHistory: false, // Prevents bot from getting stuck on old chats
+        generateHighQualityLinkPreviews: false,
     });
 
     sock.ev.on('creds.update', saveCreds);
 
-    // Sends a short status message to your own inbox (so it shows up
-    // like a normal WhatsApp message, not just a server log).
     const notifyOwner = async (text) => {
         try {
             const rawId = sock.user?.id;
             if (!rawId) return;
-            const ownJid = jidNormalizedUser(rawId); // strips the ":device" suffix so it's a valid chat JID
+            const ownJid = jidNormalizedUser(rawId);
             const sent = await sock.sendMessage(ownJid, { text });
             if (sent?.key?.id) {
                 botSentMessageIds.add(sent.key.id);
@@ -113,7 +115,6 @@ async function startBot() {
         }
     };
 
-    // Request pairing code once, only if this session isn't registered yet
     if (!state.creds.registered && process.env.PHONE_NUMBER && !pairingRequested) {
         pairingRequested = true;
         setTimeout(async () => {
@@ -144,49 +145,80 @@ async function startBot() {
             console.log('==========================================');
             console.log('DAINA AI IS READY AND CONNECTED! 🚀');
             console.log('==========================================');
-            notifyOwner('✅ DIANA-01 Connected');
+            notifyOwner('✅ DIANA-01 Connected and Active.');
         }
     });
 
     // Message handling
-    sock.ev.on('messages.upsert', async ({ messages }) => {
+    sock.ev.on('messages.upsert', async ({ messages, type }) => {
+        // Only process new messages, ignore history syncs
+        if (type !== 'notify') return;
+
         const msg = messages[0];
         if (!msg.message) return;
 
         const from = msg.key.remoteJid;
-        if (!from || from.endsWith('@g.us') || from === 'status@broadcast') return;
+        
+        // 1. IGNORE: Status, Groups (@g.us), and Channels (@newsletter)
+        if (!from || from === 'status@broadcast' || from.endsWith('@g.us') || from.endsWith('@newsletter')) {
+            return;
+        }
 
-        const body =
-            msg.message.conversation ||
-            msg.message.extendedTextMessage?.text ||
-            '';
+        // 2. IGNORE: Old messages from startup (messages older than 2 minutes)
+        const msgTimestamp = msg.messageTimestamp * 1000;
+        const now = Date.now();
+        if (now - msgTimestamp > 2 * 60 * 1000) {
+            return; 
+        }
 
+        const body = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
+
+        // 3. HANDLE OUTGOING MESSAGES (Commands & Manual Pausing)
         if (msg.key.fromMe) {
-            // Ignore the bot's own auto-replies — otherwise the bot
-            // would detect its own reply as a "manual message" and pause itself.
             if (botSentMessageIds.has(msg.key.id)) {
                 botSentMessageIds.delete(msg.key.id);
                 return;
             }
 
-            if (body.toLowerCase() === '!bot on') {
-                isBotActive = true;
-                console.log('Bot dobara ACTIVE kar diya gaya hai.');
-                notifyOwner('✅ DIANA-01 Connected');
-            } else if (body.toLowerCase() === '!bot off') {
-                isBotActive = false;
-                console.log('Bot PAUSED kar diya gaya hai.');
-                notifyOwner('⏸️ DIANA-01 Paused');
-            } else if (isBotActive && !body.startsWith('!')) {
-                isBotActive = false;
-                console.log('Manual message detected. Bot PAUSED.');
-                notifyOwner('⏸️ DIANA-01 Paused');
+            // Global Commands Check
+            if (body.toLowerCase() === '.on') {
+                isGlobalBotActive = true;
+                pausedChats.clear(); // Reset all 5-minute pauses
+                console.log('Bot globally ACTIVE kar diya gaya hai.');
+                notifyOwner('✅ DIANA-01 Globally Active');
+                return;
+            } else if (body.toLowerCase() === '.off') {
+                isGlobalBotActive = false;
+                console.log('Bot globally PAUSED kar diya gaya hai.');
+                notifyOwner('⏸️ DIANA-01 Globally Paused');
+                return;
+            } 
+            
+            // Smart Pause: If manual reply sent, pause THIS CHAT ONLY for 5 mins
+            else if (isGlobalBotActive && !body.startsWith('.')) {
+                const unpauseTime = Date.now() + PAUSE_DURATION;
+                pausedChats.set(from, unpauseTime);
+                console.log(`Manual message detected. Bot PAUSED for ${from} for 5 minutes.`);
             }
             return;
         }
 
-        if (!isBotActive) return;
+        // 4. CHECK GLOBAL & INDIVIDUAL PAUSE STATUS FOR INCOMING MESSAGES
+        if (!isGlobalBotActive) return;
 
+        if (pausedChats.has(from)) {
+            const unpauseTime = pausedChats.get(from);
+            if (Date.now() < unpauseTime) {
+                // Still within 5 minutes, ignore message
+                return;
+            } else {
+                // 5 minutes are over, bot resumes for this chat
+                pausedChats.delete(from);
+                console.log(`5 minutes over. Bot RESUMED automatically for ${from}`);
+            }
+        }
+
+        // 5. GENERATE AI RESPONSE
         try {
             const isFirstMessageInChat = !introducedChats.has(from);
             introducedChats.add(from);
@@ -206,7 +238,7 @@ You DO NOT reveal prices. If asked, respond:
 "Price depends on type. Owner confirm karega. Pehle batao kya chahiye?"
 
 Escalation Rules:
-- - If user says "owner", "manager", "real person", "call me", or uses aggressive tone:  
+- If user says "owner", "manager", "real person", "call me", or uses aggressive tone:  
   Respond: "Owner ab online hai. Wait karo." → Tag @OWNER with full chat log.
 - If request is vague: Ask ONE follow-up: "Kis platform pe chahiye? Ya kya krna hai?"  
   No extra questions.
@@ -322,7 +354,6 @@ Always use the latest business knowledge available to you.`;
                 });
                 replyText = completion.choices[0].message.content;
             } catch (firstErr) {
-                // Rare transient errors — retry once after a short wait
                 console.log('Groq error, retrying once:', firstErr.message);
                 await new Promise((r) => setTimeout(r, 1000));
                 const completion = await groq.chat.completions.create({
@@ -338,7 +369,7 @@ Always use the latest business knowledge available to you.`;
             const sent = await sock.sendMessage(
                 from,
                 { text: replyText },
-                { quoted: msg } // makes the reply appear tagged to the customer's original message
+                { quoted: msg }
             );
             if (sent?.key?.id) {
                 botSentMessageIds.add(sent.key.id);

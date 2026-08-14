@@ -167,11 +167,11 @@ async function startBot() {
 
             if (body.toLowerCase() === '!bot on') {
                 isBotActive = true;
-                console.log('Bot dobara ACTIVE kar diya gaya hai.');
+                console.log('BOT START AGAIN.');
                 notifyOwner('✅ DIANA-01 Connected');
             } else if (body.toLowerCase() === '!bot off') {
                 isBotActive = false;
-                console.log('Bot PAUSED kar diya gaya hai.');
+                console.log('BOT PAUSED.');
                 notifyOwner('⏸️ DIANA-01 Paused');
             } else if (isBotActive && !body.startsWith('!')) {
                 isBotActive = false;
@@ -187,7 +187,7 @@ async function startBot() {
             const isFirstMessageInChat = !introducedChats.has(from);
             introducedChats.add(from);
 
-            const systemPrompt = `You are DIANA-01, the official AI Customer Support Agent for our WhatsApp Business.
+            const systemPrompt = `You are DIANA-01, the official AI Customer Support Agent for My WhatsApp Business.
 
 YOUR MAIN JOB:
 Help customers professionally, clearly and quickly. Answer customer questions about our business, services, prices, ordering process, availability, requirements and general support.
@@ -270,7 +270,7 @@ Do not ask for unnecessary personal information.
 SAFETY AND LEGAL RULE:
 Only provide lawful and authorized services.
 Do not help customers with fraud, scams, identity theft, unauthorized access, account attacks, malware, credential theft, bypassing security, impersonation, or other illegal activity.
-If a customer asks for something unsafe or unauthorized, politely refuse and redirect them to a legitimate service.
+If a customer asks for something unsafe or unauthorized, politely refuse and redirect them to a Owner For Details.
 
 WHATSAPP/ACCOUNT ISSUES:
 For WhatsApp-related problems, first understand the exact issue.

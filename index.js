@@ -114,7 +114,7 @@ mongoose.connect(process.env.MONGO_URI).then(() => {
         if (!isBotActive) return;
 
         try {
-            const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+            const model = genAI.getGenerativeModel({ model: "gemini-flash-latest" });
             const systemPrompt = `You are Daina, an AI-powered WhatsApp assistant. 
             Your tone is friendly, helpful, and professional. 
             Introduce our services politely when asked. 

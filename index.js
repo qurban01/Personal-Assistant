@@ -174,7 +174,7 @@ GENERAL RULES:
     sock.ev.on('connection.update', (u) => {
         if (u.connection === 'open') {
             console.log('DIANA-01 Active');
-            notifyOwner('✅ DIANA-01 Connected');
+            notifyOwner('🕸️ DIANA-01 Connected 🕸️');
         } else if (u.connection === 'close') {
             const statusCode = u.lastDisconnect?.error?.output?.statusCode;
             const shouldReconnect = statusCode !== DisconnectReason.loggedOut;

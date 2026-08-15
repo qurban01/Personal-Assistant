@@ -10,7 +10,7 @@ let isGlobalBotActive = true;
 const pausedChats = new Map();
 const userChatHistory = new Map();
 const PAUSE_DURATION = 5 * 60 * 1000;
-const MAX_HISTORY_LENGTH = 8;
+const MAX_HISTORY_LENGTH = 20;
 
 const botSentMessageIds = new Set();
 let pairingRequested = false;
@@ -36,19 +36,12 @@ async function useMongoAuthState(sessionId) {
     };
 }
 
-// Extracts only real, readable text from a message.
-// Returns null for anything the bot can't actually read (voice notes,
-// stickers, images/videos without a caption, documents, etc.) so the
-// bot stays silent instead of guessing/hallucinating a reply.
 function extractText(message) {
     if (!message) return null;
     if (message.conversation) return message.conversation;
     if (message.extendedTextMessage?.text) return message.extendedTextMessage.text;
     if (message.imageMessage?.caption) return message.imageMessage.caption;
     if (message.videoMessage?.caption) return message.videoMessage.caption;
-    // audioMessage (voice notes), stickerMessage, documentMessage without
-    // caption, contactMessage, locationMessage, reactionMessage, etc. are
-    // intentionally NOT handled here — they fall through to null.
     return null;
 }
 
@@ -59,7 +52,18 @@ async function startBot() {
 
     sock.ev.on('creds.update', saveCreds);
 
-    // Request pairing code once, only if this session isn't registered yet
+    const notifyOwner = async (text) => {
+        try {
+            const rawId = sock.user?.id;
+            if (!rawId) return;
+            const ownJid = jidNormalizedUser(rawId);
+            const sent = await sock.sendMessage(ownJid, { text });
+            if (sent?.key?.id) botSentMessageIds.add(sent.key.id);
+        } catch (err) {
+            console.log('Could not send owner notification:', err.message);
+        }
+    };
+
     if (!state.creds.registered && process.env.PHONE_NUMBER && !pairingRequested) {
         pairingRequested = true;
         setTimeout(async () => {
@@ -82,7 +86,6 @@ async function startBot() {
 
         if (!from || from === 'status@broadcast' || from.endsWith('@g.us') || from.endsWith('@newsletter')) return;
 
-        // Ignore the bot's own auto-replies bouncing back as fromMe messages
         if (botSentMessageIds.has(msg.key.id)) {
             botSentMessageIds.delete(msg.key.id);
             return;
@@ -90,34 +93,49 @@ async function startBot() {
 
         const body = extractText(msg.message);
 
-        // Commands Handling
         if (msg.key.fromMe) {
             const cmdBody = body || '';
-            if (cmdBody.toLowerCase() === '.on') { isGlobalBotActive = true; pausedChats.clear(); userChatHistory.clear(); return; }
-            if (cmdBody.toLowerCase() === '.off') { isGlobalBotActive = false; return; }
-            if (isGlobalBotActive && body && !cmdBody.startsWith('.')) pausedChats.set(from, Date.now() + PAUSE_DURATION);
+            if (cmdBody.toLowerCase() === '.on') {
+                isGlobalBotActive = true;
+                pausedChats.clear();
+                userChatHistory.clear();
+                notifyOwner('🕸️ DIANA-01 Connected 🕸️');
+                return;
+            }
+            if (cmdBody.toLowerCase() === '.off') {
+                isGlobalBotActive = false;
+                notifyOwner('⏸️ DIANA-01 Paused');
+                return;
+            }
+            if (isGlobalBotActive && body && !cmdBody.startsWith('.')) {
+                pausedChats.set(from, Date.now() + PAUSE_DURATION);
+                notifyOwner('⏸️ DIANA-01 Paused (manual reply detected)');
+            }
             return;
         }
 
         if (!isGlobalBotActive || (pausedChats.has(from) && Date.now() < pausedChats.get(from))) return;
 
-        // No readable text (voice note, sticker, plain image/video, etc.) — stay silent
         if (!body || !body.trim()) {
             console.log(`Skipped non-text message from ${from} (voice/sticker/media without caption)`);
             return;
         }
 
-        // Context Memory Logic
         if (!userChatHistory.has(from)) userChatHistory.set(from, []);
         const history = userChatHistory.get(from);
         history.push({ role: "user", content: body });
         if (history.length > MAX_HISTORY_LENGTH) history.shift();
 
-        const systemPrompt = `You are Daina, handling a WhatsApp number for both personal casual chats and business services.
+        const systemPrompt = `MEMORY & CONTEXT RULE (follow this in addition to everything below):
+- You can see the full recent conversation history above the customer's latest message. Read all of it before replying.
+- Never ask a question the customer already answered earlier in this same chat — remember details they already gave (network, service type, requirement, etc.) and use them instead of re-asking.
+- If the customer already gave order details, acknowledge that naturally and move the conversation forward instead of restarting from scratch.
+
+You are Daina, handling a WhatsApp number for both personal casual chats and business services.
 
 CASUAL CHAT RULES (STRICT):
 - If the user sends a casual greeting (Hi, Hello, Kese ho, Kya ho raha hai, Name), your replies must be SHORT, dry, and to-the-point (1 to 5 words maximum).
-- NEVER act overly friendly, NEVER write long sentences, NEVER ask
+- NEVER act overly friendly, NEVER write long sentences, NEVER ask counter-questions to keep the conversation going unless required. Just reply bluntly.
 if user ask who is Arbab in Any language Reply this "Arbab is a digital explorer and glitch hunter ⚡ — someone who looks beyond the obvious, detects flaws others overlook, and turns complex problems into solutions.
 He doesn't just use technology. He understands how it works. 🕶️"
 If anyone asks "Where is Arbab?" in any language, reply: "Arbab is busy. Please wait."
@@ -128,18 +146,18 @@ SERVICE MODE RULES:
 - Available Services:
   - Social Media Hacks (Account growth, account buying/selling, reporting, banning, unbanning)
   - Fake WhatsApp Numbers (different countries, low rates)
-  - NADRA Services (ID Card details, Register Number on details, SIM block, CDR, Sim Ownership, Live Location)
-  - Call Spoofing (Android app)
+  - NADRA Services (ID Card details, Register Number on Id Card, SIM block, CDR, Sim Ownership, Live Location)
+  - Call Spoofing (Android app) Kasi ko be call kro kasi be number sa 
   - Document Forgery (Fake/Original docs)
   - Web Dev (Websites, apps, stores)
-- DO NOT reveal prices. Say: "Price depends on type. Arbab confirm karega. Pehle batao kya chahiye?"
+- DO NOT reveal prices. Say: "Price Owner Btaya Ga?"
 - Keep service replies short (1-3 lines). Use bullets if needed. Only 1 emoji per message.
 
 GENERAL RULES:
 - Only respond based on the actual text the user sent — never invent or assume a different message than what was received.
 - Formatting: Write In Title Case — Capitalize The First Letter Of Each Word In Your Reply.
 - Never say you are an AI, bot, or automated.
-- If user is rude Be rude back in short words.`;
+- If user is rude Be Extremely rude back in short words.`;
 
         try {
             const completion = await groq.chat.completions.create({
@@ -155,7 +173,8 @@ GENERAL RULES:
 
     sock.ev.on('connection.update', (u) => {
         if (u.connection === 'open') {
-            console.log('DAINA-01 Active');
+            console.log('DIANA-01 Active');
+            notifyOwner('✅ DIANA-01 Connected');
         } else if (u.connection === 'close') {
             const statusCode = u.lastDisconnect?.error?.output?.statusCode;
             const shouldReconnect = statusCode !== DisconnectReason.loggedOut;

@@ -2,8 +2,10 @@ const makeWASocket = require('baileys').default;
 const { DisconnectReason, Browsers, initAuthCreds, BufferJSON, proto, jidNormalizedUser, fetchLatestBaileysVersion } = require('baileys');
 const mongoose = require('mongoose');
 const Groq = require('groq-sdk');
+const { GoogleGenAI } = require('@google/genai');
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+const genAI = process.env.GEMINI_API_KEY ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }) : null;
 
 // Bot State & Memory
 let isGlobalBotActive = true;
@@ -170,16 +172,48 @@ GENERAL RULES:
 - Never say you are an AI, bot, or automated.
 - If user is rude Be Extremely rude back in short words.`;
 
+        let replyText;
         try {
             const completion = await groq.chat.completions.create({
                 model: "llama-3.3-70b-versatile",
                 messages: [{ role: "system", content: systemPrompt }, ...history]
             });
-            const replyText = completion.choices[0].message.content;
-            history.push({ role: "assistant", content: replyText });
+            replyText = completion.choices[0].message.content;
+        } catch (err) {
+            console.log('Groq error:', err.message);
+
+            // If Groq is rate-limited (or briefly down), fall back to Gemini
+            // so the customer still gets a real reply instead of silence.
+            if (genAI) {
+                try {
+                    const historyText = history.map(h => `${h.role === 'user' ? 'Customer' : 'You'}: ${h.content}`).join('\n');
+                    const geminiResult = await genAI.models.generateContent({
+                        model: "gemini-3.7-flash",
+                        contents: `${systemPrompt}\n\nConversation so far:\n${historyText}`
+                    });
+                    replyText = geminiResult.text;
+                } catch (geminiErr) {
+                    console.log('Gemini fallback also failed:', geminiErr.message);
+                }
+            }
+        }
+
+        if (!replyText) {
+            // Both providers failed — let the customer know instead of staying silent
+            try {
+                const sent = await sock.sendMessage(from, { text: 'Thora Busy Hun, 1 Min Mein Reply Karta Hun 🙏' }, { quoted: msg });
+                if (sent?.key?.id) botSentMessageIds.add(sent.key.id);
+            } catch (e2) { console.log('Fallback send failed:', e2.message); }
+            return;
+        }
+
+        history.push({ role: "assistant", content: replyText });
+        try {
             const sent = await sock.sendMessage(from, { text: replyText }, { quoted: msg });
             if (sent?.key?.id) botSentMessageIds.add(sent.key.id);
-        } catch (err) { console.log('Error:', err.message); }
+        } catch (sendErr) {
+            console.log('Send error:', sendErr.message);
+        }
     });
 
     sock.ev.on('connection.update', (u) => {

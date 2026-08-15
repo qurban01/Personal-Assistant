@@ -9,7 +9,7 @@ const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 let isGlobalBotActive = true;
 const pausedChats = new Map();
 const userChatHistory = new Map();
-const PAUSE_DURATION = 5 * 60 * 1000;
+const PAUSE_DURATION = 10 * 60 * 1000;
 const MAX_HISTORY_LENGTH = 20;
 
 const botSentMessageIds = new Set();
@@ -45,7 +45,11 @@ function extractText(message) {
     return null;
 }
 
+let isStarting = false; // prevents multiple overlapping sockets from stacking up on reconnect
+
 async function startBot() {
+    if (isStarting) return;
+    isStarting = true;
     const { state, saveCreds } = await useMongoAuthState('daina-session');
     const { version } = await fetchLatestBaileysVersion();
     const sock = makeWASocket({ auth: state, version, printQRInTerminal: false, browser: Browsers.ubuntu('Chrome'), syncFullHistory: false });
@@ -173,9 +177,11 @@ GENERAL RULES:
 
     sock.ev.on('connection.update', (u) => {
         if (u.connection === 'open') {
+            isStarting = false;
             console.log('DIANA-01 Active');
-            notifyOwner('🕸️ DIANA-01 Connected 🕸️');
+            notifyOwner('✅ DIANA-01 Connected');
         } else if (u.connection === 'close') {
+            isStarting = false;
             const statusCode = u.lastDisconnect?.error?.output?.statusCode;
             const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
             console.log('Connection closed. Reconnecting:', shouldReconnect);

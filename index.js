@@ -10,7 +10,7 @@ let isGlobalBotActive = true;
 const pausedChats = new Map();
 const userChatHistory = new Map();
 const PAUSE_DURATION = 5 * 60 * 1000;
-const MAX_HISTORY_LENGTH = 8; 
+const MAX_HISTORY_LENGTH = 8;
 
 const botSentMessageIds = new Set();
 let pairingRequested = false;
@@ -36,6 +36,22 @@ async function useMongoAuthState(sessionId) {
     };
 }
 
+// Extracts only real, readable text from a message.
+// Returns null for anything the bot can't actually read (voice notes,
+// stickers, images/videos without a caption, documents, etc.) so the
+// bot stays silent instead of guessing/hallucinating a reply.
+function extractText(message) {
+    if (!message) return null;
+    if (message.conversation) return message.conversation;
+    if (message.extendedTextMessage?.text) return message.extendedTextMessage.text;
+    if (message.imageMessage?.caption) return message.imageMessage.caption;
+    if (message.videoMessage?.caption) return message.videoMessage.caption;
+    // audioMessage (voice notes), stickerMessage, documentMessage without
+    // caption, contactMessage, locationMessage, reactionMessage, etc. are
+    // intentionally NOT handled here — they fall through to null.
+    return null;
+}
+
 async function startBot() {
     const { state, saveCreds } = await useMongoAuthState('daina-session');
     const { version } = await fetchLatestBaileysVersion();
@@ -43,25 +59,53 @@ async function startBot() {
 
     sock.ev.on('creds.update', saveCreds);
 
+    // Request pairing code once, only if this session isn't registered yet
+    if (!state.creds.registered && process.env.PHONE_NUMBER && !pairingRequested) {
+        pairingRequested = true;
+        setTimeout(async () => {
+            try {
+                const code = await sock.requestPairingCode(process.env.PHONE_NUMBER);
+                console.log('\n==========================================');
+                console.log(`YOUR WA PAIRING CODE IS: ${code}`);
+                console.log('==========================================\n');
+            } catch (err) {
+                console.log('Error getting pairing code:', err.message);
+            }
+        }, 3000);
+    }
+
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
         if (type !== 'notify') return;
         const msg = messages[0];
         if (!msg.message) return;
         const from = msg.key.remoteJid;
-        
+
         if (!from || from === 'status@broadcast' || from.endsWith('@g.us') || from.endsWith('@newsletter')) return;
 
-        const body = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
+        // Ignore the bot's own auto-replies bouncing back as fromMe messages
+        if (botSentMessageIds.has(msg.key.id)) {
+            botSentMessageIds.delete(msg.key.id);
+            return;
+        }
+
+        const body = extractText(msg.message);
 
         // Commands Handling
         if (msg.key.fromMe) {
-            if (body.toLowerCase() === '.on') { isGlobalBotActive = true; pausedChats.clear(); userChatHistory.clear(); return; }
-            if (body.toLowerCase() === '.off') { isGlobalBotActive = false; return; }
-            if (isGlobalBotActive && !body.startsWith('.')) pausedChats.set(from, Date.now() + PAUSE_DURATION);
+            const cmdBody = body || '';
+            if (cmdBody.toLowerCase() === '.on') { isGlobalBotActive = true; pausedChats.clear(); userChatHistory.clear(); return; }
+            if (cmdBody.toLowerCase() === '.off') { isGlobalBotActive = false; return; }
+            if (isGlobalBotActive && body && !cmdBody.startsWith('.')) pausedChats.set(from, Date.now() + PAUSE_DURATION);
             return;
         }
 
         if (!isGlobalBotActive || (pausedChats.has(from) && Date.now() < pausedChats.get(from))) return;
+
+        // No readable text (voice note, sticker, plain image/video, etc.) — stay silent
+        if (!body || !body.trim()) {
+            console.log(`Skipped non-text message from ${from} (voice/sticker/media without caption)`);
+            return;
+        }
 
         // Context Memory Logic
         if (!userChatHistory.has(from)) userChatHistory.set(from, []);
@@ -80,27 +124,27 @@ CASUAL CHAT RULES (STRICT):
   User: "Kya kar rahi ho" or "Kya ho raha hai" -> Reply: "Kuch nhi"
   User: "Naam kya hai" -> Reply: "Daina"
 if user ask who is Arbab in Any language Reply this "Arbab is a digital explorer and glitch hunter ⚡ — someone who looks beyond the obvious, detects flaws others overlook, and turns complex problems into solutions.
-He doesn’t just use technology. He understands how it works. 🕶️"
-If anyone asks “Where is Arbab?” in any language, reply: “Arbab is busy. Please wait.”
+He doesn't just use technology. He understands how it works. 🕶️"
+If anyone asks "Where is Arbab?" in any language, reply: "Arbab is busy. Please wait."
 If a user says their name is Mahi, treat them with extra respect, kindness, and warmth. Never be rude. if someone rude for mahi then talk rudely
-if any user talk respectfully then talk respectfully 
+if any user talk respectfully then talk respectfully
 SERVICE MODE RULES:
 - If the user asks for a service, switch to your professional underground agent persona.
 - Available Services:
-  - Social Media Hacks (Account growth, buying/selling, reporting, banning, unbanning)
-  - Fake WhatsApp Numbers (190+ countries, low rates)
-  - NADRA Services (ID details, Registrar Number, SIM block, CDR, Sim Owner, Live Location)
+  - Social Media Hacks (Account growth, Account buying/selling, reporting, banning, unbanning)
+  - Fake WhatsApp Numbers (Different countries, low rates)
+  - NADRA Services (ID Card details, Register Number On ID Card, SIM block, CDR, Sim Ownership, Live Location of Any Sim)
   - Call Spoofing (Android app)
   - Document Forgery (Fake/Original docs)
-  - Web Dev (Websites, apps, stores)
-- DO NOT reveal prices. Say: "Price depends on type. Arbab confirm karega. Pehle batao kya chahiye?"
+  - Web Dev (Websites, apps, store)
+- DO NOT reveal prices. Say: "Price depends on type. Owner Confirm Kra Ga ?"
 - Keep service replies short (1-3 lines). Use bullets if needed. Only 1 emoji per message.
 
 GENERAL RULES:
+- Only respond based on the actual text the user sent — never invent or assume a different message than what was received.
 - Formatting: Write In Title Case — Capitalize The First Letter Of Each Word In Your Reply.
 - Never say you are an AI, bot, or automated.
-- If user asks for Arbab/owner: "Arbab online hai, wait karo."
-- If user is rude ("bhar ma jao", "chup ho jao"): Be rude back in short words.`;
+- If user is rude Be rude back in short words.`;
 
         try {
             const completion = await groq.chat.completions.create({
@@ -109,11 +153,21 @@ GENERAL RULES:
             });
             const replyText = completion.choices[0].message.content;
             history.push({ role: "assistant", content: replyText });
-            await sock.sendMessage(from, { text: replyText }, { quoted: msg });
+            const sent = await sock.sendMessage(from, { text: replyText }, { quoted: msg });
+            if (sent?.key?.id) botSentMessageIds.add(sent.key.id);
         } catch (err) { console.log('Error:', err.message); }
     });
 
-    sock.ev.on('connection.update', (u) => { if(u.connection === 'open') console.log('DAINA-01 Active'); else if(u.connection === 'close') startBot(); });
+    sock.ev.on('connection.update', (u) => {
+        if (u.connection === 'open') {
+            console.log('DAINA-01 Active');
+        } else if (u.connection === 'close') {
+            const statusCode = u.lastDisconnect?.error?.output?.statusCode;
+            const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+            console.log('Connection closed. Reconnecting:', shouldReconnect);
+            if (shouldReconnect) startBot();
+        }
+    });
 }
 
 mongoose.connect(process.env.MONGO_URI).then(startBot);

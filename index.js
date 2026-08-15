@@ -175,7 +175,7 @@ GENERAL RULES:
         let replyText;
         try {
             const completion = await groq.chat.completions.create({
-                model: "llama-3.3-70b-versatile",
+                model: "llama-3.1-8b-instant",
                 messages: [{ role: "system", content: systemPrompt }, ...history]
             });
             replyText = completion.choices[0].message.content;
@@ -185,15 +185,26 @@ GENERAL RULES:
             // If Groq is rate-limited (or briefly down), fall back to Gemini
             // so the customer still gets a real reply instead of silence.
             if (genAI) {
+                const historyText = history.map(h => `${h.role === 'user' ? 'Customer' : 'You'}: ${h.content}`).join('\n');
+                const geminiPrompt = `${systemPrompt}\n\nConversation so far:\n${historyText}`;
                 try {
-                    const historyText = history.map(h => `${h.role === 'user' ? 'Customer' : 'You'}: ${h.content}`).join('\n');
                     const geminiResult = await genAI.models.generateContent({
                         model: "gemini-3.7-flash",
-                        contents: `${systemPrompt}\n\nConversation so far:\n${historyText}`
+                        contents: geminiPrompt
                     });
                     replyText = geminiResult.text;
                 } catch (geminiErr) {
-                    console.log('Gemini fallback also failed:', geminiErr.message);
+                    console.log('Gemini fallback failed, retrying once:', geminiErr.message);
+                    try {
+                        await new Promise(r => setTimeout(r, 1500));
+                        const geminiRetry = await genAI.models.generateContent({
+                            model: "gemini-3.7-flash",
+                            contents: geminiPrompt
+                        });
+                        replyText = geminiRetry.text;
+                    } catch (geminiErr2) {
+                        console.log('Gemini retry also failed:', geminiErr2.message);
+                    }
                 }
             }
         }

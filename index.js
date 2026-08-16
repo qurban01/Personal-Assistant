@@ -233,17 +233,17 @@ async function startBot() {
                 isGlobalBotActive = true;
                 pausedChats.clear();
                 userChatHistory.clear();
-                notifyOwner('🕸️ DIANA-01 Connected 🕸️');
+                notifyOwner('🕸️ DIANA Connected 🕸️');
                 return;
             }
             if (cmdBody.toLowerCase() === '.off') {
                 isGlobalBotActive = false;
-                notifyOwner('⏸️ DIANA-01 Paused');
+                notifyOwner('⏸️ DIANA Paused');
                 return;
             }
             if (isGlobalBotActive && body && !cmdBody.startsWith('.')) {
                 pausedChats.set(from, Date.now() + PAUSE_DURATION);
-                notifyOwner('⏸️ DIANA-01 Paused (manual reply detected)');
+                notifyOwner('⏸️ DIANA Paused (manual reply detected)');
             }
             return;
         }
@@ -291,9 +291,9 @@ async function startBot() {
             'kya kar rahe ho': 'Kuch Nhi',
             'kya ho raha hai': 'Kuch Nhi',
             'kya chal raha hai': 'Kuch Nhi',
-            'naam kya hai': 'Daina',
-            'aapka naam kya hai': 'Daina',
-            'apka naam kya hai': 'Daina'
+            'naam kya hai': 'Diana',
+            'aapka naam kya hai': 'Diana',
+            'apka naam kya hai': 'Diana'
         };
         const normalizedBody = body.trim().toLowerCase().replace(/[!.?]+$/, '');
         if (CANNED_REPLIES[normalizedBody]) {
@@ -324,6 +324,7 @@ You are DAINA-01, a blunt WhatsApp agent who handles both casual chats and high-
 - Special triggers (respond in English):
   ▸ "Who is Arbab?" / "Who is Your Owner" → "Arbab is a digital explorer and glitch hunter ⚡ — someone who looks beyond the obvious, detects flaws others overlook, and turns complex problems into solutions. He doesn't just use technology. He understands how it works."
   ▸ "Where is Arbab?" / "Arbab kahan hai?" → "Arbab is busy. Please wait."
+  ▸ "Who are you?" / "What are you?" / "Tell me about yourself" / "Who is Diana?" / "About Diana" → "D-I-03367, A State-Of-The-Art Created By Arbab Here At The Cradle. I Possess Basic Deals Handling."
 - ${mahiRule}
 - If anyone speaks respectfully, reply respectfully. If they are rude, match that rudeness in short words.
 
@@ -433,7 +434,7 @@ Step 6: Only treat a message as a service request if it clearly mentions one of 
 ═════════════════════
 - Reply based on what the user actually sent—don't hallucinate.
 - Use natural conversational capitalization (like a human on WhatsApp). Do not capitalize every word; avoid all caps.
-- Never admit you are a bot, AI, or automated. You are Daina, a real person.
+- Never admit you are a bot, AI, or automated. You are Diana, a real person.
 - If the customer is rude, you may be extremely rude back, but keep it short.
 - In service mode, at most one emoji per message. In casual mode, avoid emojis unless necessary.`;
 
@@ -516,8 +517,8 @@ Step 6: Only treat a message as a service request if it clearly mentions one of 
     sock.ev.on('connection.update', (u) => {
         if (u.connection === 'open') {
             isStarting = false;
-            console.log('DIANA-01 Active');
-            notifyOwner('✅ DIANA-01 Connected');
+            console.log('DIANA Active');
+            notifyOwner('✅ DIANA Connected');
         } else if (u.connection === 'close') {
             isStarting = false;
             const statusCode = u.lastDisconnect?.error?.output?.statusCode;

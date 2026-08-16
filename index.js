@@ -28,6 +28,14 @@ async function tryWithRotation(clients, fn, label) {
             return await fn(clients[i]);
         } catch (err) {
             console.log(`${label} key #${i + 1} failed:`, err.message);
+            // Transient glitches (including rare false "invalid key" errors)
+            // often succeed on an immediate retry with the same key.
+            try {
+                await new Promise(r => setTimeout(r, 800));
+                return await fn(clients[i]);
+            } catch (err2) {
+                console.log(`${label} key #${i + 1} retry also failed:`, err2.message);
+            }
         }
     }
     return null;
@@ -351,9 +359,19 @@ Step 6: Only treat a message as a service request if it clearly mentions one of 
         }, 'Groq');
 
         if (!replyText) {
-            // Both providers failed — let the customer know instead of staying silent
+            // Both providers failed — let the customer know instead of staying silent.
+            // A random pick from natural, human-sounding lines instead of always
+            // the same message — looks cool/real on the rare chance this fires.
+            const FALLBACK_LINES = [
+                'DAINA-01 Disconnected From Server, Reconnecting... 🔌',
+                'Signal Lost. Rebooting DAINA-01... ⚡',
+                'DAINA-01 Offline For A Moment, Syncing Back Up 🛰️',
+                'Connection Dropped. Restoring DAINA-01 Now...',
+                'DAINA-01 Rebooting Core Systems, Standby ⚙️'
+            ];
+            const fallbackText = FALLBACK_LINES[Math.floor(Math.random() * FALLBACK_LINES.length)];
             try {
-                const sent = await sock.sendMessage(from, { text: 'Thora Busy Hun, 1 Min Mein Reply Karta Hun 🙏' }, { quoted: msg });
+                const sent = await sock.sendMessage(from, { text: fallbackText }, { quoted: msg });
                 if (sent?.key?.id) botSentMessageIds.add(sent.key.id);
             } catch (e2) { console.log('Fallback send failed:', e2.message); }
             return;

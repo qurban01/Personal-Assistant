@@ -13,7 +13,7 @@ const PAUSE_DURATION = 10 * 60 * 1000;
 const MAX_HISTORY_LENGTH = 20;
 
 const botSentMessageIds = new Set();
-const processedIncomingIds = new Set(); // dedupe: prevents replying to the same message twice on reconnect/retry
+const processedIncomingIds = new Set();
 const MAX_PROCESSED_IDS = 500;
 let pairingRequested = false;
 
@@ -47,7 +47,7 @@ function extractText(message) {
     return null;
 }
 
-let isStarting = false; // prevents multiple overlapping sockets from stacking up on reconnect
+let isStarting = false;
 
 async function startBot() {
     if (isStarting) return;
@@ -97,8 +97,6 @@ async function startBot() {
             return;
         }
 
-        // Dedupe: if this exact incoming message was already processed
-        // (can happen on reconnect/offline-sync replays), skip it silently.
         if (msg.key.id) {
             if (processedIncomingIds.has(msg.key.id)) return;
             processedIncomingIds.add(msg.key.id);
@@ -143,7 +141,6 @@ async function startBot() {
         history.push({ role: "user", content: body });
         if (history.length > MAX_HISTORY_LENGTH) history.shift();
 
-        // Fixed, deterministic replies for exact casual greetings
         const CANNED_REPLIES = {
             'hi': 'Hn G',
             'hello': 'Hn G',
@@ -359,8 +356,13 @@ Step 6: Only treat a message as a service request if it clearly mentions one of 
     });
 }
 
-// Connect to MongoDB using standard MONGODB_URI environment variable
-mongoose.connect(process.env.MONGODB_URI)
+// Safely handle MongoDB connection with explicit check
+const mongoUri = process.env.MONGODB_URI;
+if (!mongoUri) {
+    console.log('CRITICAL: MONGODB_URI environment variable is missing!');
+}
+
+mongoose.connect(mongoUri || '')
     .then(() => {
         console.log('MongoDB connected successfully.');
         startBot();

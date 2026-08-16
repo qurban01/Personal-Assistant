@@ -73,6 +73,40 @@ const processedIncomingIds = new Set(); // dedupe: prevents replying to the same
 const MAX_PROCESSED_IDS = 500;
 let pairingRequested = false;
 
+// ===== Price List (owner-managed via WhatsApp commands, persisted in MongoDB) =====
+const priceList = new Map(); // serviceName (lowercase) -> price string
+
+const PriceSchema = new mongoose.Schema({ _id: String, price: String }, { collection: 'price_list' });
+const PriceEntry = mongoose.models.PriceEntry || mongoose.model('PriceEntry', PriceSchema);
+
+async function loadPriceList() {
+    try {
+        const docs = await PriceEntry.find({}).lean();
+        priceList.clear();
+        docs.forEach(d => priceList.set(d._id, d.price));
+        console.log(`Loaded ${priceList.size} price entries from MongoDB.`);
+    } catch (err) {
+        console.log('Could not load price list:', err.message);
+    }
+}
+
+async function setPrice(service, price) {
+    const key = service.trim().toLowerCase();
+    priceList.set(key, price.trim());
+    await PriceEntry.findByIdAndUpdate(key, { price: price.trim() }, { upsert: true });
+}
+
+async function deletePrice(service) {
+    const key = service.trim().toLowerCase();
+    priceList.delete(key);
+    await PriceEntry.findByIdAndDelete(key);
+}
+
+function formatPriceList() {
+    if (priceList.size === 0) return 'No prices set yet.';
+    return [...priceList.entries()].map(([k, v]) => `• ${k} — ${v}`).join('\n');
+}
+
 // ===== MongoDB Auth =====
 async function useMongoAuthState(sessionId) {
     const AuthKeySchema = new mongoose.Schema({ _id: String, value: String }, { collection: 'baileys_auth' });
@@ -147,6 +181,7 @@ let isStarting = false; // prevents multiple overlapping sockets from stacking u
 async function startBot() {
     if (isStarting) return;
     isStarting = true;
+    await loadPriceList();
     const { state, saveCreds } = await useMongoAuthState('daina-session');
     const { version } = await fetchLatestBaileysVersion();
     const sock = makeWASocket({ auth: state, version, printQRInTerminal: false, browser: Browsers.ubuntu('Chrome'), syncFullHistory: false });
@@ -241,6 +276,30 @@ async function startBot() {
                 notifyOwner('⏸️ DIANA Paused');
                 return;
             }
+            // .setprice <service name> = <price>
+            if (cmdBody.toLowerCase().startsWith('.setprice ')) {
+                const raw = cmdBody.slice('.setprice '.length);
+                const [service, price] = raw.split('=').map(s => s?.trim());
+                if (service && price) {
+                    await setPrice(service, price);
+                    notifyOwner(`✅ Price Set: "${service}" — ${price}`);
+                } else {
+                    notifyOwner('⚠️ Format: .setprice service name = price');
+                }
+                return;
+            }
+            // .delprice <service name>
+            if (cmdBody.toLowerCase().startsWith('.delprice ')) {
+                const service = cmdBody.slice('.delprice '.length).trim();
+                await deletePrice(service);
+                notifyOwner(`🗑️ Price removed for "${service}"`);
+                return;
+            }
+            // .prices — list everything currently set
+            if (cmdBody.toLowerCase() === '.prices') {
+                notifyOwner(`📋 Current Prices:\n${formatPriceList()}`);
+                return;
+            }
             if (isGlobalBotActive && body && !cmdBody.startsWith('.')) {
                 pausedChats.set(from, Date.now() + PAUSE_DURATION);
                 notifyOwner('⏸️ DIANA Paused (manual reply detected)');
@@ -307,24 +366,30 @@ async function startBot() {
         }
 
         const mahiRule = messageMatchesNumber(msg, from, '923147850614')
-            ? 'The current user is Mahi. Always treat her like a princess with sweetness and warmth automatically without her needing to introduce herself. Never be rude to her and talk romantically.' 
+            ? 'The current user is Mahi. Always treat her like a princess with sweetness and warmth automatically without her needing to introduce herself. Never be rude to her and talk like his Bestie, remember she dont like flirting lines or something like that,she like villains,and she is my friend to.' 
             : '';
+
+        const priceListText = priceList.size > 0
+            ? `PRICE LIST (owner-set, current and accurate — you MAY share these exact prices when asked):\n${formatPriceList()}\n(For anything not listed above, you still don't know the price — defer to the owner as usual.)`
+            : 'No prices have been set by the owner yet — always defer pricing questions to the owner as usual.';
 
         const systemPrompt = `MEMORY & CONTEXT RULE:
 - Remember the entire conversation history. If the customer already told you a detail (e.g., country, network), don't ask again.
 - If order details are already given, acknowledge naturally and move forward — never restart from scratch.
+
+${priceListText}
 
 You are DAINA-01, a blunt WhatsApp agent who handles both casual chats and high-end underground services. Act exactly like a real human dealer. Never admit you are a bot.
 
 ═════════════════════
   CASUAL CHAT (STRICT)
 ═════════════════════
-- For any casual greeting (Hi, Hello, How are you, What's your name) → reply with max 5 words, dry and to the point. Don't be friendly.
+- For a plain name question (e.g. "Naam kya hai?", "What's your name?", "Apka naam?") → reply with JUST the name "Diana", nothing more. Do NOT give the detailed background/bio for a simple name question.
 - If the user says something specific about themselves (job, what they're doing, a personal fact), your short reply must relate to that information — never use generic fillers like "Nothing" or "Just work."
 - Special triggers (respond in English):
   ▸ "Who is Arbab?" / "Who is Your Owner" → "Arbab is a digital explorer and glitch hunter ⚡ — someone who looks beyond the obvious, detects flaws others overlook, and turns complex problems into solutions. He doesn't just use technology. He understands how it works."
   ▸ "Where is Arbab?" / "Arbab kahan hai?" → "Arbab is busy. Please wait."
-  ▸ "Who are you?" / "What are you?" / "Tell me about yourself" / "Who is Diana?" / "About Diana" → "D-I-03367, A State-Of-The-Art Created By Arbab Here At The Cradle. I Possess Basic Deals Handling."
+  ▸ Deeper background/detail questions ONLY — e.g. "Tell me about yourself", "Who created you?", "What are you exactly?", "Give me your details/info", "Diana ke bare mein detail batao" (NOT a plain "what's your name") → "D-I-03367, A State-Of-The-Art Created By Arbab Here At The Cradle. I Possess Basic Deals Handling."
 - ${mahiRule}
 - If anyone speaks respectfully, reply respectfully. If they are rude, match that rudeness in short words.
 
@@ -421,9 +486,10 @@ Step 3: Once the customer provides the required detail, acknowledge and confirm 
    Example: "Got it. Zong number 0312-3456789 ke liye ownership. Order confirmed."
    - Never add extra guarantees, timelines, or delivery methods unless asked about the content of the service (you can describe the output as per catalog).
 
-Step 4: If the customer asks about price at any point (even after you gave product details), reply exactly:
-   "Order confirmed, the rest of the details including price will be managed by the owner."
-   - Never state any number, amount, discount, or duration.
+Step 4: If the customer asks about price:
+   - First check the PRICE LIST given above. If that specific service has a price listed, tell them that exact price directly and naturally.
+   - If it's NOT in the price list, reply exactly: "Order confirmed, the rest of the details including price will be managed by the owner."
+   - Never invent, guess, or estimate a price that isn't in the price list.
 
 Step 5: Never invent output details beyond what's in the catalog. If the catalog doesn't cover it, say "The owner will confirm that specific point."
 

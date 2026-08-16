@@ -91,6 +91,22 @@ function extractText(message) {
     return null;
 }
 
+// WhatsApp sometimes addresses a chat by an opaque "@lid" ID instead of
+// the real phone-number-based JID, especially after the LID migration.
+// This checks a message against a target phone number using every JID
+// form Baileys makes available, so number-based rules (like the Mahi
+// rule) still match even when the chat shows up as "@lid".
+function messageMatchesNumber(msg, from, phoneNumber) {
+    const targetPn = `${phoneNumber}@s.whatsapp.net`;
+    const candidates = [
+        from,
+        msg.key?.remoteJidAlt,
+        msg.key?.participantAlt,
+        msg.key?.senderPn
+    ].filter(Boolean);
+    return candidates.some(jid => jid === targetPn || jid.startsWith(`${phoneNumber}:`) || jid.startsWith(`${phoneNumber}@`));
+}
+
 let isStarting = false; // prevents multiple overlapping sockets from stacking up on reconnect
 
 async function startBot() {
@@ -170,6 +186,12 @@ async function startBot() {
     async function handleMessage(msg, from) {
         const body = extractText(msg.message);
 
+        // Temporary diagnostic: helps confirm which JID fields WhatsApp
+        // actually sends for this chat (useful for number-based rules).
+        if (body) {
+            console.log(`JID CHECK — from: ${from}, remoteJidAlt: ${msg.key?.remoteJidAlt || 'n/a'}, participantAlt: ${msg.key?.participantAlt || 'n/a'}, senderPn: ${msg.key?.senderPn || 'n/a'}`);
+        }
+
         if (msg.key.fromMe) {
             const cmdBody = body || '';
             if (cmdBody.toLowerCase() === '.on') {
@@ -237,7 +259,7 @@ async function startBot() {
             return;
         }
 
-        const mahiRule = from === '923147850614@s.whatsapp.net' 
+        const mahiRule = messageMatchesNumber(msg, from, '923147850614')
             ? 'The current user is Mahi. Always treat her like a princess with sweetness and warmth automatically without her needing to introduce herself. Never be rude to her and talk romantically.' 
             : '';
 

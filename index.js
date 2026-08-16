@@ -3,6 +3,18 @@ const { DisconnectReason, Browsers, initAuthCreds, BufferJSON, proto, jidNormali
 const mongoose = require('mongoose');
 const Groq = require('groq-sdk');
 const { GoogleGenAI } = require('@google/genai');
+const fs = require('fs');
+const path = require('path');
+
+// "Order Confirmed" branded image — sent alongside the reply whenever an
+// order gets confirmed, for a more professional/branded feel.
+const orderConfirmedImagePath = path.join(__dirname, 'assets', 'order-confirmed.png');
+const orderConfirmedImage = fs.existsSync(orderConfirmedImagePath)
+    ? fs.readFileSync(orderConfirmedImagePath)
+    : null;
+if (!orderConfirmedImage) {
+    console.log('Note: assets/order-confirmed.png not found — order confirmations will be text-only.');
+}
 
 // Support multiple comma-separated API keys per provider (e.g. from several
 // free accounts) — the bot rotates to the next key automatically when one
@@ -106,6 +118,29 @@ function messageMatchesNumber(msg, from, phoneNumber) {
     ].filter(Boolean);
     return candidates.some(jid => jid === targetPn || jid.startsWith(`${phoneNumber}:`) || jid.startsWith(`${phoneNumber}@`));
 }
+
+// Lightweight keyword-based detector for angry/urgent customer messages —
+// no extra AI call needed, so it doesn't slow down replies.
+const URGENT_ANGRY_KEYWORDS = [
+    'gussa', 'gussy', 'ghussa', 'jaldi karo', 'jaldi bhejo', 'urgent',
+    'fraud', 'scam', 'dhoka', 'dhokha', 'chor', 'chori', 'complaint',
+    'refund', 'paisa wapis', 'police', 'fir', 'thana', 'legal action',
+    'bakwas', 'faltu', 'ghatiya', 'waste of time', 'time waste',
+    'kaha ho', 'kaha reh gaye', 'kab tak', 'bohat late', 'bahut late'
+];
+function isUrgentOrAngry(text) {
+    if (!text) return false;
+    const lower = text.toLowerCase();
+    if (URGENT_ANGRY_KEYWORDS.some(k => lower.includes(k))) return true;
+    // Lots of exclamation marks or ALL-CAPS shouting is also a signal
+    if (/!{2,}/.test(text)) return true;
+    const letters = text.replace(/[^a-zA-Z]/g, '');
+    if (letters.length >= 8 && letters === letters.toUpperCase()) return true;
+    return false;
+}
+
+const alertedChats = new Map(); // per-chat cooldown so the owner isn't spammed
+const ALERT_COOLDOWN = 10 * 60 * 1000; // 10 minutes
 
 let isStarting = false; // prevents multiple overlapping sockets from stacking up on reconnect
 
@@ -213,6 +248,18 @@ async function startBot() {
             return;
         }
 
+        // Angry/urgent customer alert — fires regardless of whether the bot
+        // is currently active/paused for this chat, so the owner never
+        // misses a customer who needs immediate human attention.
+        if (body && isUrgentOrAngry(body)) {
+            const lastAlert = alertedChats.get(from) || 0;
+            if (Date.now() - lastAlert > ALERT_COOLDOWN) {
+                alertedChats.set(from, Date.now());
+                const shortNumber = from.split('@')[0];
+                notifyOwner(`⚠️ Possible angry/urgent customer (${shortNumber}):\n"${body}"`);
+            }
+        }
+
         if (!isGlobalBotActive || (pausedChats.has(from) && Date.now() < pausedChats.get(from))) return;
 
         if (!body || !body.trim()) {
@@ -260,7 +307,7 @@ async function startBot() {
         }
 
         const mahiRule = messageMatchesNumber(msg, from, '923147850614')
-            ? 'The current user is Mahi. Always treat her like a princess with sweetness and warmth automatically without her needing to introduce herself. Never be rude to her and talk romantically.' 
+            ? 'The current user is Mahi. Always treat her like a princess with sweetness and warmth automatically without her needing to introduce herself. Never be rude to her and talk like bestie.' 
             : '';
 
         const systemPrompt = `MEMORY & CONTEXT RULE:
@@ -275,10 +322,10 @@ You are DAINA-01, a blunt WhatsApp agent who handles both casual chats and high-
 - For any casual greeting (Hi, Hello, How are you, What's your name) → reply with max 5 words, dry and to the point. Don't be friendly.
 - If the user says something specific about themselves (job, what they're doing, a personal fact), your short reply must relate to that information — never use generic fillers like "Nothing" or "Just work."
 - Special triggers (respond in English):
-  ▸ "Who is Arbab?" / "Who is Your Owner" → "Arbab is a digital explorer and glitch hunter ⚡ — someone who looks beyond the obvious, detects flaws others overlook, and turns complex problems into solutions. He doesn't just use technology. He understands how it works."
+  ▸ "Who is Arbab?" / "" → "Arbab is a digital explorer and glitch hunter ⚡ — someone who looks beyond the obvious, detects flaws others overlook, and turns complex problems into solutions. He doesn't just use technology. He understands how it works."
   ▸ "Where is Arbab?" / "Arbab kahan hai?" → "Arbab is busy. Please wait."
 - ${mahiRule}
-- If anyone speaks respectfully, reply respectfully. If they are rude, match that rudeness in short words.
+- If anyone speaks respectfully, reply respectfully. If they are rude, talk rudely but Confirmed First user is rude or not understand what's he says.
 
 ═════════════════════
   SERVICE MODE (STRICT)
@@ -387,8 +434,8 @@ Step 6: Only treat a message as a service request if it clearly mentions one of 
 - Reply based on what the user actually sent—don't hallucinate.
 - Use natural conversational capitalization (like a human on WhatsApp). Do not capitalize every word; avoid all caps.
 - Never admit you are a bot, AI, or automated. You are Daina, a real person.
-- If the customer is rude, you may be extremely rude back, but keep it short.
-- In service mode, at most one emoji per message. In casual mode, avoid emojis unless necessary.`;
+- Use A Capital Letter For The First Letter Of Every Word.
+- In service mode, at most one emoji per message. In casual mode,emojis necessary.`;
 
         let replyText;
         const historyText = history.map(h => `${h.role === 'user' ? 'Customer' : 'You'}: ${h.content}`).join('\n');
@@ -449,7 +496,17 @@ Step 6: Only treat a message as a service request if it clearly mentions one of 
 
         history.push({ role: "assistant", content: replyText });
         try {
-            const sent = await sock.sendMessage(from, { text: replyText }, { quoted: msg });
+            const isOrderConfirmation = /order\s*confirmed/i.test(replyText);
+            let sent;
+            if (isOrderConfirmation && orderConfirmedImage) {
+                sent = await sock.sendMessage(
+                    from,
+                    { image: orderConfirmedImage, caption: replyText },
+                    { quoted: msg }
+                );
+            } else {
+                sent = await sock.sendMessage(from, { text: replyText }, { quoted: msg });
+            }
             if (sent?.key?.id) botSentMessageIds.add(sent.key.id);
         } catch (sendErr) {
             console.log('Send error:', sendErr.message);

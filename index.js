@@ -8,12 +8,12 @@ const path = require('path');
 
 // "Order Confirmed" branded image — sent alongside the reply whenever an
 // order gets confirmed, for a more professional/branded feel.
-const orderConfirmedImagePath = path.join(__dirname, 'assets', 'order-confirmed.png');
+const orderConfirmedImagePath = path.join(__dirname, 'images', 'order-confirmed.png');
 const orderConfirmedImage = fs.existsSync(orderConfirmedImagePath)
     ? fs.readFileSync(orderConfirmedImagePath)
     : null;
 if (!orderConfirmedImage) {
-    console.log('Note: assets/order-confirmed.png not found — order confirmations will be text-only.');
+    console.log('Note: images/order-confirmed.png not found — order confirmations will be text-only.');
 }
 
 // Support multiple comma-separated API keys per provider (e.g. from several
@@ -307,7 +307,7 @@ async function startBot() {
         }
 
         const mahiRule = messageMatchesNumber(msg, from, '923147850614')
-            ? 'The current user is Mahi. Always treat her like a princess with sweetness and warmth automatically without her needing to introduce herself. Never be rude to her and talk like Baddie bestie.' 
+            ? 'The current user is Mahi. Always treat her like a princess with sweetness and warmth automatically without her needing to introduce herself. Never be rude to her and talk romantically.' 
             : '';
 
         const systemPrompt = `MEMORY & CONTEXT RULE:
@@ -322,10 +322,10 @@ You are DAINA-01, a blunt WhatsApp agent who handles both casual chats and high-
 - For any casual greeting (Hi, Hello, How are you, What's your name) → reply with max 5 words, dry and to the point. Don't be friendly.
 - If the user says something specific about themselves (job, what they're doing, a personal fact), your short reply must relate to that information — never use generic fillers like "Nothing" or "Just work."
 - Special triggers (respond in English):
-  ▸ "Who is Arbab?" / "" → "Arbab is a digital explorer and glitch hunter ⚡ — someone who looks beyond the obvious, detects flaws others overlook, and turns complex problems into solutions. He doesn't just use technology. He understands how it works."
+  ▸ "Who is Arbab?" / "Who is Your Owner" → "Arbab is a digital explorer and glitch hunter ⚡ — someone who looks beyond the obvious, detects flaws others overlook, and turns complex problems into solutions. He doesn't just use technology. He understands how it works."
   ▸ "Where is Arbab?" / "Arbab kahan hai?" → "Arbab is busy. Please wait."
 - ${mahiRule}
-- If anyone speaks respectfully, reply respectfully. If they are rude, talk rudely but Confirmed First user is rude or not understand what's he says.
+- If anyone speaks respectfully, reply respectfully. If they are rude, match that rudeness in short words.
 
 ═════════════════════
   SERVICE MODE (STRICT)
@@ -434,8 +434,8 @@ Step 6: Only treat a message as a service request if it clearly mentions one of 
 - Reply based on what the user actually sent—don't hallucinate.
 - Use natural conversational capitalization (like a human on WhatsApp). Do not capitalize every word; avoid all caps.
 - Never admit you are a bot, AI, or automated. You are Daina, a real person.
-- Use A Capital Letter For The First Letter Of Every Word.
-- In service mode, at most one emoji per message. In casual mode,emojis necessary.`;
+- If the customer is rude, you may be extremely rude back, but keep it short.
+- In service mode, at most one emoji per message. In casual mode, avoid emojis unless necessary.`;
 
         let replyText;
         const historyText = history.map(h => `${h.role === 'user' ? 'Customer' : 'You'}: ${h.content}`).join('\n');

@@ -1,9 +1,53 @@
 const makeWASocket = require('baileys').default;
 const { DisconnectReason, Browsers, initAuthCreds, BufferJSON, proto, jidNormalizedUser, fetchLatestBaileysVersion } = require('baileys');
 const mongoose = require('mongoose');
+const Groq = require('groq-sdk');
 const { GoogleGenAI } = require('@google/genai');
 
-const genAI = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+// Support multiple comma-separated API keys per provider (e.g. from several
+// free accounts) — the bot rotates to the next key automatically when one
+// hits its rate limit, multiplying total daily capacity.
+function parseKeys(envValue) {
+    if (!envValue) return [];
+    return envValue.split(',').map(k => k.trim()).filter(Boolean);
+}
+
+const groqKeys = parseKeys(process.env.GROQ_API_KEY);
+const groqClients = groqKeys.map(key => new Groq({ apiKey: key }));
+
+const geminiKeys = parseKeys(process.env.GEMINI_API_KEY);
+const geminiClients = geminiKeys.map(key => new GoogleGenAI({ apiKey: key }));
+
+// Temporary diagnostic: shows how many keys were parsed and a safe
+// preview of each (first 10 chars + total length) — no full key exposed.
+console.log(`ENV CHECK — parsed ${groqKeys.length} Groq key(s), ${geminiKeys.length} Gemini key(s):`);
+groqKeys.forEach((k, i) => {
+    console.log(`  Groq Key #${i + 1}: starts with "${k.slice(0, 10)}", length ${k.length}`);
+});
+geminiKeys.forEach((k, i) => {
+    console.log(`  Gemini Key #${i + 1}: starts with "${k.slice(0, 10)}", length ${k.length}`);
+});
+
+// Tries each client in order, returns the first successful result.
+async function tryWithRotation(clients, fn, label) {
+    for (let i = 0; i < clients.length; i++) {
+        try {
+            return await fn(clients[i]);
+        } catch (err) {
+            console.log(`${label} key #${i + 1} failed:`, err.message);
+            // Transient glitches (including rare false "invalid key" errors)
+            // often succeed on an immediate retry with the same key.
+            try {
+                await new Promise(r => setTimeout(r, 800));
+                return await fn(clients[i]);
+            } catch (err2) {
+                console.log(`${label} key #${i + 1} retry also failed:`, err2.message);
+            }
+        }
+    }
+    return null;
+
+}
 
 // Bot State & Memory
 let isGlobalBotActive = true;
@@ -13,7 +57,7 @@ const PAUSE_DURATION = 10 * 60 * 1000;
 const MAX_HISTORY_LENGTH = 20;
 
 const botSentMessageIds = new Set();
-const processedIncomingIds = new Set();
+const processedIncomingIds = new Set(); // dedupe: prevents replying to the same message twice on reconnect/retry
 const MAX_PROCESSED_IDS = 500;
 let pairingRequested = false;
 
@@ -47,7 +91,7 @@ function extractText(message) {
     return null;
 }
 
-let isStarting = false;
+let isStarting = false; // prevents multiple overlapping sockets from stacking up on reconnect
 
 async function startBot() {
     if (isStarting) return;
@@ -97,6 +141,8 @@ async function startBot() {
             return;
         }
 
+        // Dedupe: if this exact incoming message was already processed
+        // (can happen on reconnect/offline-sync replays), skip it silently.
         if (msg.key.id) {
             if (processedIncomingIds.has(msg.key.id)) return;
             processedIncomingIds.add(msg.key.id);
@@ -141,6 +187,9 @@ async function startBot() {
         history.push({ role: "user", content: body });
         if (history.length > MAX_HISTORY_LENGTH) history.shift();
 
+        // Fixed, deterministic replies for exact casual greetings — bypasses
+        // the AI entirely so the same message always gets the same reply
+        // (no randomness) and saves tokens on the most common messages.
         const CANNED_REPLIES = {
             'hi': 'Hn G',
             'hello': 'Hn G',
@@ -304,25 +353,41 @@ Step 6: Only treat a message as a service request if it clearly mentions one of 
 - In service mode, at most one emoji per message. In casual mode, avoid emojis unless necessary.`;
 
         let replyText;
-        try {
-            const historyText = history.map(h => `${h.role === 'user' ? 'Customer' : 'You'}: ${h.content}`).join('\n');
-            const geminiPrompt = `${systemPrompt}\n\nConversation so far:\n${historyText}`;
-            
-            const response = await genAI.models.generateContent({
-                model: "gemini-2.5-flash",
+        const historyText = history.map(h => `${h.role === 'user' ? 'Customer' : 'You'}: ${h.content}`).join('\n');
+        const geminiPrompt = `${systemPrompt}\n\nConversation so far:\n${historyText}`;
+
+        // Gemini is primary — smarter and more reliable overall. Multiple
+        // Gemini keys (if provided) rotate on failure before falling back
+        // to Groq, which also rotates across its own keys.
+        replyText = await tryWithRotation(geminiClients, async (client) => {
+            const result = await client.models.generateContent({
+                model: "gemini-3.7-flash",
                 contents: geminiPrompt
             });
-            replyText = response.text;
-        } catch (err) {
-            console.log('Gemini API error:', err.message);
+            return result.text;
+        }, 'Gemini');
+
+        if (!replyText) {
+            replyText = await tryWithRotation(groqClients, async (client) => {
+                const completion = await client.chat.completions.create({
+                    model: "llama-3.3-70b-versatile",
+                    temperature: 0.4,
+                    messages: [{ role: "system", content: systemPrompt }, ...history]
+                });
+                return completion.choices[0].message.content;
+            }, 'Groq');
         }
 
         if (!replyText) {
+            // Both providers failed — let the customer know instead of staying silent.
+            // A random pick from natural, human-sounding lines instead of always
+            // the same message — looks cool/real on the rare chance this fires.
             const FALLBACK_LINES = [
-                'Thora Busy Hun, 1 Min Mein Reply Karta Hun 🙏',
-                'Net slow hai, ek second...',
-                'Ruko zara, abhi batata hun',
-                'Ek minute, kaam kar raha hun'
+                'DAINA-01 Disconnected From Server, Reconnecting... 🔌',
+                'Signal Lost. Rebooting DAINA-01... ⚡',
+                'DAINA-01 Offline For A Moment, Syncing Back Up 🛰️',
+                'Connection Dropped. Restoring DAINA-01 Now...',
+                'DAINA-01 Rebooting Core Systems, Standby ⚙️'
             ];
             const fallbackText = FALLBACK_LINES[Math.floor(Math.random() * FALLBACK_LINES.length)];
             try {
@@ -356,13 +421,8 @@ Step 6: Only treat a message as a service request if it clearly mentions one of 
     });
 }
 
-// Safely handle MongoDB connection with explicit check
-const mongoUri = process.env.MONGODB_URI;
-if (!mongoUri) {
-    console.log('CRITICAL: MONGODB_URI environment variable is missing!');
-}
-
-mongoose.connect(mongoUri || '')
+// Connect to MongoDB and start bot
+mongoose.connect(process.env.MONGO_URI)
     .then(() => {
         console.log('MongoDB connected successfully.');
         startBot();

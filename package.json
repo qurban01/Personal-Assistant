@@ -1,17 +1,18 @@
 {
-  "name": "whatsapp-ai-bot",
+  "name": "daina-whatsapp-bot",
   "version": "1.0.0",
-  "description": "WhatsApp AI Bot using Baileys and Groq (multi-key rotation)",
+  "description": "WhatsApp AI Bot powered by Baileys, MongoDB and Google Gemini",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "baileys": "7.0.0-rc14",
-    "groq-sdk": "^1.3.0",
-    "mongoose": "^7.6.0"
+    "@google/genai": "^0.1.1",
+    "@whiskeysockets/baileys": "^6.7.0",
+    "baileys": "^6.7.8",
+    "mongoose": "^8.0.0"
   },
   "engines": {
-    "node": "22.x"
+    "node": ">=20.x"
   }
 }

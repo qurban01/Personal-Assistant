@@ -2,10 +2,30 @@ const makeWASocket = require('baileys').default;
 const { DisconnectReason, Browsers, initAuthCreds, BufferJSON, proto, jidNormalizedUser, fetchLatestBaileysVersion } = require('baileys');
 const mongoose = require('mongoose');
 const Groq = require('groq-sdk');
-const { GoogleGenAI } = require('@google/genai');
 
-const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-const genAI = process.env.GEMINI_API_KEY ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }) : null;
+// Support multiple comma-separated Groq API keys (e.g. from several free
+// accounts) — the bot rotates to the next key automatically when one
+// hits its rate limit, multiplying total daily capacity.
+function parseKeys(envValue) {
+    if (!envValue) return [];
+    return envValue.split(',').map(k => k.trim()).filter(Boolean);
+}
+
+const groqKeys = parseKeys(process.env.GROQ_API_KEY);
+const groqClients = groqKeys.map(key => new Groq({ apiKey: key }));
+
+// Tries each client in order, returns the first successful result.
+async function tryWithRotation(clients, fn, label) {
+    for (let i = 0; i < clients.length; i++) {
+        try {
+            return await fn(clients[i]);
+        } catch (err) {
+            console.log(`${label} key #${i + 1} failed:`, err.message);
+        }
+    }
+    return null;
+
+}
 
 // Bot State & Memory
 let isGlobalBotActive = true;
@@ -151,13 +171,22 @@ async function startBot() {
         const CANNED_REPLIES = {
             'hi': 'Hn G',
             'hello': 'Hn G',
+            'hey': 'Hn G',
             'kese ho': 'Theek, Tum Batao',
             'kaise ho': 'Theek, Tum Batao',
+            'kaisa ho': 'Theek, Tum Batao',
+            'kisa ho': 'Theek, Tum Batao',
+            'kesa ho': 'Theek, Tum Batao',
+            'kese ho ap': 'Theek, Tum Batao',
+            'kya haal hai': 'Theek, Tum Batao',
+            'haal chaal': 'Theek, Tum Batao',
             'kya kar rahi ho': 'Kuch Nhi',
             'kya kar rahe ho': 'Kuch Nhi',
             'kya ho raha hai': 'Kuch Nhi',
+            'kya chal raha hai': 'Kuch Nhi',
             'naam kya hai': 'Daina',
-            'aapka naam kya hai': 'Daina'
+            'aapka naam kya hai': 'Daina',
+            'apka naam kya hai': 'Daina'
         };
         const normalizedBody = body.trim().toLowerCase().replace(/[!.?]+$/, '');
         if (CANNED_REPLIES[normalizedBody]) {
@@ -302,41 +331,17 @@ Step 6: Only treat a message as a service request if it clearly mentions one of 
 - In service mode, at most one emoji per message. In casual mode, avoid emojis unless necessary.`;
 
         let replyText;
-        try {
-            const completion = await groq.chat.completions.create({
-                model: "llama-3.1-8b-instant",
+
+        // Advanced model with multi-key rotation — tries each Groq key in
+        // order until one succeeds, multiplying the effective daily limit.
+        replyText = await tryWithRotation(groqClients, async (client) => {
+            const completion = await client.chat.completions.create({
+                model: "llama-3.3-70b-versatile",
+                temperature: 0.4,
                 messages: [{ role: "system", content: systemPrompt }, ...history]
             });
-            replyText = completion.choices[0].message.content;
-        } catch (err) {
-            console.log('Groq error:', err.message);
-
-            // If Groq is rate-limited (or briefly down), fall back to Gemini
-            // so the customer still gets a real reply instead of silence.
-            if (genAI) {
-                const historyText = history.map(h => `${h.role === 'user' ? 'Customer' : 'You'}: ${h.content}`).join('\n');
-                const geminiPrompt = `${systemPrompt}\n\nConversation so far:\n${historyText}`;
-                try {
-                    const geminiResult = await genAI.models.generateContent({
-                        model: "gemini-3.7-flash",
-                        contents: geminiPrompt
-                    });
-                    replyText = geminiResult.text;
-                } catch (geminiErr) {
-                    console.log('Gemini fallback failed, retrying once:', geminiErr.message);
-                    try {
-                        await new Promise(r => setTimeout(r, 1500));
-                        const geminiRetry = await genAI.models.generateContent({
-                            model: "gemini-3.7-flash",
-                            contents: geminiPrompt
-                        });
-                        replyText = geminiRetry.text;
-                    } catch (geminiErr2) {
-                        console.log('Gemini retry also failed:', geminiErr2.message);
-                    }
-                }
-            }
-        }
+            return completion.choices[0].message.content;
+        }, 'Groq');
 
         if (!replyText) {
             // Both providers failed — let the customer know instead of staying silent
@@ -379,4 +384,5 @@ mongoose.connect(process.env.MONGO_URI)
     })
     .catch(err => {
         console.log('MongoDB connection error:', err.message);
+    });MongoDB connection error:', err.message);
     });

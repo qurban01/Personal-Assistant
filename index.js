@@ -367,4 +367,4 @@ Step 6: Only treat a message as a service request if it clearly mentions one of 
     });
 }
 
-mongoose.connect(process.env.MONGO_URI).then(startBot);
+startBot();

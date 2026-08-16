@@ -14,6 +14,13 @@ function parseKeys(envValue) {
 const groqKeys = parseKeys(process.env.GROQ_API_KEY);
 const groqClients = groqKeys.map(key => new Groq({ apiKey: key }));
 
+// Temporary diagnostic: shows how many keys were parsed and a safe
+// preview of each (first 10 chars + total length) — no full key exposed.
+console.log(`ENV CHECK — parsed ${groqKeys.length} Groq key(s):`);
+groqKeys.forEach((k, i) => {
+    console.log(`  Key #${i + 1}: starts with "${k.slice(0, 10)}", length ${k.length}`);
+});
+
 // Tries each client in order, returns the first successful result.
 async function tryWithRotation(clients, fn, label) {
     for (let i = 0; i < clients.length; i++) {

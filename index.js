@@ -128,6 +128,17 @@ async function startBot() {
         }, 3000);
     }
 
+    // Per-chat queue: ensures messages from the SAME chat are always
+    // replied to in the order they arrived, even if one reply is slower
+    // (e.g. needed a retry) than a later one.
+    const chatQueues = new Map();
+    function enqueueForChat(chatId, task) {
+        const prev = chatQueues.get(chatId) || Promise.resolve();
+        const next = prev.then(task).catch(err => console.log('Queue task error:', err.message));
+        chatQueues.set(chatId, next);
+        return next;
+    }
+
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
         if (type !== 'notify') return;
         const msg = messages[0];
@@ -152,6 +163,11 @@ async function startBot() {
             }
         }
 
+        // Queue the actual handling per-chat so replies stay in order.
+        enqueueForChat(from, () => handleMessage(msg, from));
+    });
+
+    async function handleMessage(msg, from) {
         const body = extractText(msg.message);
 
         if (msg.key.fromMe) {
@@ -356,10 +372,11 @@ Step 6: Only treat a message as a service request if it clearly mentions one of 
         const historyText = history.map(h => `${h.role === 'user' ? 'Customer' : 'You'}: ${h.content}`).join('\n');
         const geminiPrompt = `${systemPrompt}\n\nConversation so far:\n${historyText}`;
 
-        // Gemini is primary — smarter and more reliable overall. Multiple
-        // Gemini keys (if provided) rotate on failure before falling back
-        // to Groq, which also rotates across its own keys.
-        replyText = await tryWithRotation(geminiClients, async (client) => {
+        // Race Gemini and Groq at the same time — whichever answers first
+        // (with a real, non-empty reply) wins. This gets Groq's speed on
+        // the common case while still falling back automatically to
+        // whichever provider succeeds if the other is down/rate-limited.
+        const geminiAttempt = tryWithRotation(geminiClients, async (client) => {
             const result = await client.models.generateContent({
                 model: "gemini-3.7-flash",
                 contents: geminiPrompt
@@ -367,15 +384,26 @@ Step 6: Only treat a message as a service request if it clearly mentions one of 
             return result.text;
         }, 'Gemini');
 
-        if (!replyText) {
-            replyText = await tryWithRotation(groqClients, async (client) => {
-                const completion = await client.chat.completions.create({
-                    model: "llama-3.3-70b-versatile",
-                    temperature: 0.4,
-                    messages: [{ role: "system", content: systemPrompt }, ...history]
-                });
-                return completion.choices[0].message.content;
-            }, 'Groq');
+        const groqAttempt = tryWithRotation(groqClients, async (client) => {
+            const completion = await client.chat.completions.create({
+                model: "llama-3.3-70b-versatile",
+                temperature: 0.4,
+                messages: [{ role: "system", content: systemPrompt }, ...history]
+            });
+            return completion.choices[0].message.content;
+        }, 'Groq');
+
+        // Promise.any needs rejections (not null) to know an attempt "failed",
+        // so wrap each: a null/empty result counts as a rejection too.
+        const asRaceEntry = (p) => p.then(r => {
+            if (!r) throw new Error('empty result');
+            return r;
+        });
+
+        try {
+            replyText = await Promise.any([asRaceEntry(geminiAttempt), asRaceEntry(groqAttempt)]);
+        } catch {
+            replyText = null; // both failed
         }
 
         if (!replyText) {
@@ -404,7 +432,7 @@ Step 6: Only treat a message as a service request if it clearly mentions one of 
         } catch (sendErr) {
             console.log('Send error:', sendErr.message);
         }
-    });
+    }
 
     sock.ev.on('connection.update', (u) => {
         if (u.connection === 'open') {

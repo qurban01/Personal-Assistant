@@ -46,15 +46,10 @@ async function tryWithRotation(clients, fn, label) {
         try {
             return await fn(clients[i]);
         } catch (err) {
+            // Any failure — rate-limit, invalid key, transient glitch — just
+            // moves straight to the next key immediately. No same-key retry
+            // delay, so rotating through several keys stays fast.
             console.log(`${label} key #${i + 1} failed:`, err.message);
-            // Transient glitches (including rare false "invalid key" errors)
-            // often succeed on an immediate retry with the same key.
-            try {
-                await new Promise(r => setTimeout(r, 800));
-                return await fn(clients[i]);
-            } catch (err2) {
-                console.log(`${label} key #${i + 1} retry also failed:`, err2.message);
-            }
         }
     }
     return null;
@@ -366,7 +361,7 @@ async function startBot() {
         }
 
         const mahiRule = messageMatchesNumber(msg, from, '923147850614')
-            ? 'The current user is Mahi. Always treat her like a princess with sweetness and warmth automatically without her needing to introduce herself. Never be rude to her and talk like his Bestie, remember she dont like flirting lines or something like that,she like villains,and she is my friend to.' 
+            ? 'The current user is Mahi. Always treat her like a princess with sweetness and warmth automatically without her needing to introduce herself. Never be rude to her and talk romantically.' 
             : '';
 
         const priceListText = priceList.size > 0
@@ -502,25 +497,13 @@ Step 6: Only treat a message as a service request if it clearly mentions one of 
 - Use natural conversational capitalization (like a human on WhatsApp). Do not capitalize every word; avoid all caps.
 - Never admit you are a bot, AI, or automated. You are Diana, a real person.
 - If the customer is rude, you may be extremely rude back, but keep it short.
-- In service mode, at most one emoji per message. In casual mode,emojis necessary.`;
+- In service mode, at most one emoji per message. In casual mode,emoji necessary.`;
 
         let replyText;
         const historyText = history.map(h => `${h.role === 'user' ? 'Customer' : 'You'}: ${h.content}`).join('\n');
         const geminiPrompt = `${systemPrompt}\n\nConversation so far:\n${historyText}`;
 
-        // Race Gemini and Groq at the same time — whichever answers first
-        // (with a real, non-empty reply) wins. This gets Groq's speed on
-        // the common case while still falling back automatically to
-        // whichever provider succeeds if the other is down/rate-limited.
-        const geminiAttempt = tryWithRotation(geminiClients, async (client) => {
-            const result = await client.models.generateContent({
-                model: "gemini-3.7-flash",
-                contents: geminiPrompt
-            });
-            return result.text;
-        }, 'Gemini');
-
-        const groqAttempt = tryWithRotation(groqClients, async (client) => {
+        const tryGroq = () => tryWithRotation(groqClients, async (client) => {
             const completion = await client.chat.completions.create({
                 model: "llama-3.3-70b-versatile",
                 temperature: 0.4,
@@ -529,17 +512,22 @@ Step 6: Only treat a message as a service request if it clearly mentions one of 
             return completion.choices[0].message.content;
         }, 'Groq');
 
-        // Promise.any needs rejections (not null) to know an attempt "failed",
-        // so wrap each: a null/empty result counts as a rejection too.
-        const asRaceEntry = (p) => p.then(r => {
-            if (!r) throw new Error('empty result');
-            return r;
-        });
+        const tryGemini = () => tryWithRotation(geminiClients, async (client) => {
+            const result = await client.models.generateContent({
+                model: "gemini-3.7-flash",
+                contents: geminiPrompt
+            });
+            return result.text;
+        }, 'Gemini');
 
-        try {
-            replyText = await Promise.any([asRaceEntry(geminiAttempt), asRaceEntry(groqAttempt)]);
-        } catch {
-            replyText = null; // both failed
+        // Sequential, Groq first (fast + saves quota vs calling both every
+        // time). If ALL Groq keys AND ALL Gemini keys fail on the first
+        // pass, do one more full round (Groq again, then Gemini again)
+        // before finally giving up — extra resilience against transient
+        // provider hiccups without burning quota on every single message.
+        for (let round = 1; round <= 2 && !replyText; round++) {
+            replyText = await tryGroq();
+            if (!replyText) replyText = await tryGemini();
         }
 
         if (!replyText) {

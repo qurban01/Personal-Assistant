@@ -502,7 +502,7 @@ Step 6: Only treat a message as a service request if it clearly mentions one of 
 - Use natural conversational capitalization (like a human on WhatsApp). Do not capitalize every word; avoid all caps.
 - Never admit you are a bot, AI, or automated. You are Diana, a real person.
 - If the customer is rude, you may be extremely rude back, but keep it short.
-- In service mode, at most one emoji per message. In casual mode, avoid emojis unless necessary.`;
+- In service mode, at most one emoji per message. In casual mode,emojis necessary.`;
 
         let replyText;
         const historyText = history.map(h => `${h.role === 'user' ? 'Customer' : 'You'}: ${h.content}`).join('\n');

@@ -3,8 +3,31 @@ const { DisconnectReason, Browsers, initAuthCreds, BufferJSON, proto, jidNormali
 const mongoose = require('mongoose');
 const Groq = require('groq-sdk');
 const { GoogleGenAI } = require('@google/genai');
+const { EdgeTTS } = require('node-edge-tts');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
+
+// Converts a text reply into a spoken voice-note buffer (OGG/Opus — the
+// format WhatsApp needs for it to appear as a real playable voice note).
+// Uses Microsoft Edge's free TTS service with an Urdu (Pakistan) voice.
+async function textToVoiceBuffer(text) {
+    const tmpPath = path.join(os.tmpdir(), `tts-${Date.now()}-${Math.random().toString(36).slice(2)}.ogg`);
+    try {
+        const tts = new EdgeTTS({
+            voice: 'ur-PK-UzmaNeural',
+            outputFormat: 'ogg-48khz-16bit-mono-opus'
+        });
+        await tts.ttsPromise(text, tmpPath);
+        const buffer = fs.readFileSync(tmpPath);
+        fs.unlink(tmpPath, () => {});
+        return buffer;
+    } catch (err) {
+        console.log('TTS error:', err.message);
+        try { fs.unlinkSync(tmpPath); } catch {}
+        return null;
+    }
+}
 
 // "Order Confirmed" branded image — sent alongside the reply whenever an
 // order gets confirmed, for a more professional/branded feel.
@@ -195,6 +218,25 @@ async function startBot() {
         }
     };
 
+    // Sends a customer-facing reply as a spoken voice note instead of text.
+    // Falls back to plain text only if TTS itself fails, so the customer
+    // never gets left with no reply at all.
+    const sendVoiceReply = async (toJid, quotedMsg, text) => {
+        const audioBuffer = await textToVoiceBuffer(text);
+        let sent;
+        if (audioBuffer) {
+            sent = await sock.sendMessage(
+                toJid,
+                { audio: audioBuffer, mimetype: 'audio/ogg; codecs=opus', ptt: true },
+                { quoted: quotedMsg }
+            );
+        } else {
+            sent = await sock.sendMessage(toJid, { text }, { quoted: quotedMsg });
+        }
+        if (sent?.key?.id) botSentMessageIds.add(sent.key.id);
+        return sent;
+    };
+
     if (!state.creds.registered && process.env.PHONE_NUMBER && !pairingRequested) {
         pairingRequested = true;
         setTimeout(async () => {
@@ -354,8 +396,7 @@ async function startBot() {
             const cannedText = CANNED_REPLIES[normalizedBody];
             history.push({ role: "assistant", content: cannedText });
             try {
-                const sent = await sock.sendMessage(from, { text: cannedText }, { quoted: msg });
-                if (sent?.key?.id) botSentMessageIds.add(sent.key.id);
+                await sendVoiceReply(from, msg, cannedText);
             } catch (sendErr) { console.log('Send error:', sendErr.message); }
             return;
         }
@@ -497,7 +538,7 @@ Step 6: Only treat a message as a service request if it clearly mentions one of 
 - Use natural conversational capitalization (like a human on WhatsApp). Do not capitalize every word; avoid all caps.
 - Never admit you are a bot, AI, or automated. You are Diana, a real person.
 - If the customer is rude, you may be extremely rude back, but keep it short.
-- In service mode, at most one emoji per message. In casual mode,emoji necessary.`;
+- In service mode, at most one emoji per message. In casual mode, avoid emojis unless necessary.`;
 
         let replyText;
         const historyText = history.map(h => `${h.role === 'user' ? 'Customer' : 'You'}: ${h.content}`).join('\n');
@@ -543,8 +584,7 @@ Step 6: Only treat a message as a service request if it clearly mentions one of 
             ];
             const fallbackText = FALLBACK_LINES[Math.floor(Math.random() * FALLBACK_LINES.length)];
             try {
-                const sent = await sock.sendMessage(from, { text: fallbackText }, { quoted: msg });
-                if (sent?.key?.id) botSentMessageIds.add(sent.key.id);
+                await sendVoiceReply(from, msg, fallbackText);
             } catch (e2) { console.log('Fallback send failed:', e2.message); }
             return;
         }
@@ -552,17 +592,20 @@ Step 6: Only treat a message as a service request if it clearly mentions one of 
         history.push({ role: "assistant", content: replyText });
         try {
             const isOrderConfirmation = /order\s*confirmed/i.test(replyText);
-            let sent;
             if (isOrderConfirmation && orderConfirmedImage) {
-                sent = await sock.sendMessage(
+                // Images can't carry audio, so an order-confirmation still
+                // gets the branded image with a text caption, plus the
+                // same reply spoken as a voice note right after it.
+                const sent = await sock.sendMessage(
                     from,
                     { image: orderConfirmedImage, caption: replyText },
                     { quoted: msg }
                 );
+                if (sent?.key?.id) botSentMessageIds.add(sent.key.id);
+                await sendVoiceReply(from, msg, replyText);
             } else {
-                sent = await sock.sendMessage(from, { text: replyText }, { quoted: msg });
+                await sendVoiceReply(from, msg, replyText);
             }
-            if (sent?.key?.id) botSentMessageIds.add(sent.key.id);
         } catch (sendErr) {
             console.log('Send error:', sendErr.message);
         }

@@ -2,13 +2,15 @@ const makeWASocket = require('baileys').default;
 const { DisconnectReason, Browsers, initAuthCreds, BufferJSON, proto, jidNormalizedUser, fetchLatestBaileysVersion } = require('baileys');
 const mongoose = require('mongoose');
 const Groq = require('groq-sdk');
-const { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } = require('@google/generative-ai');
+const { GoogleGenAI } = require('@google/genai');
 const { EdgeTTS } = require('node-edge-tts');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-// Converts a text reply into a spoken voice-note buffer (OGG/Opus)
+// Converts a text reply into a spoken voice-note buffer (OGG/Opus — the
+// format WhatsApp needs for it to appear as a real playable voice note).
+// Uses Microsoft Edge's free TTS service with an Urdu (Pakistan) voice.
 async function textToVoiceBuffer(text) {
     const tmpPath = path.join(os.tmpdir(), `tts-${Date.now()}-${Math.random().toString(36).slice(2)}.ogg`);
     try {
@@ -27,7 +29,8 @@ async function textToVoiceBuffer(text) {
     }
 }
 
-// "Order Confirmed" branded image
+// "Order Confirmed" branded image — sent alongside the reply whenever an
+// order gets confirmed, for a more professional/branded feel.
 const orderConfirmedImagePath = path.join(__dirname, 'images', 'order-confirmed.png');
 const orderConfirmedImage = fs.existsSync(orderConfirmedImagePath)
     ? fs.readFileSync(orderConfirmedImagePath)
@@ -36,7 +39,9 @@ if (!orderConfirmedImage) {
     console.log('Note: images/order-confirmed.png not found — order confirmations will be text-only.');
 }
 
-// Multi-key parser
+// Support multiple comma-separated API keys per provider (e.g. from several
+// free accounts) — the bot rotates to the next key automatically when one
+// hits its rate limit, multiplying total daily capacity.
 function parseKeys(envValue) {
     if (!envValue) return [];
     return envValue.split(',').map(k => k.trim()).filter(Boolean);
@@ -46,9 +51,17 @@ const groqKeys = parseKeys(process.env.GROQ_API_KEY);
 const groqClients = groqKeys.map(key => new Groq({ apiKey: key }));
 
 const geminiKeys = parseKeys(process.env.GEMINI_API_KEY);
-const geminiClients = geminiKeys.map(key => new GoogleGenerativeAI(key));
+const geminiClients = geminiKeys.map(key => new GoogleGenAI({ apiKey: key }));
 
+// Temporary diagnostic: shows how many keys were parsed and a safe
+// preview of each (first 10 chars + total length) — no full key exposed.
 console.log(`ENV CHECK — parsed ${groqKeys.length} Groq key(s), ${geminiKeys.length} Gemini key(s):`);
+groqKeys.forEach((k, i) => {
+    console.log(`  Groq Key #${i + 1}: starts with "${k.slice(0, 10)}", length ${k.length}`);
+});
+geminiKeys.forEach((k, i) => {
+    console.log(`  Gemini Key #${i + 1}: starts with "${k.slice(0, 10)}", length ${k.length}`);
+});
 
 // Tries each client in order, returns the first successful result.
 async function tryWithRotation(clients, fn, label) {
@@ -56,10 +69,14 @@ async function tryWithRotation(clients, fn, label) {
         try {
             return await fn(clients[i]);
         } catch (err) {
+            // Any failure — rate-limit, invalid key, transient glitch — just
+            // moves straight to the next key immediately. No same-key retry
+            // delay, so rotating through several keys stays fast.
             console.log(`${label} key #${i + 1} failed:`, err.message);
         }
     }
     return null;
+
 }
 
 // Bot State & Memory
@@ -70,12 +87,13 @@ const PAUSE_DURATION = 10 * 60 * 1000;
 const MAX_HISTORY_LENGTH = 20;
 
 const botSentMessageIds = new Set();
-const processedIncomingIds = new Set();
+const processedIncomingIds = new Set(); // dedupe: prevents replying to the same message twice on reconnect/retry
 const MAX_PROCESSED_IDS = 500;
 let pairingRequested = false;
 
-// ===== Price List (MongoDB) =====
-const priceList = new Map();
+// ===== Price List (owner-managed via WhatsApp commands, persisted in MongoDB) =====
+const priceList = new Map(); // serviceName (lowercase) -> price string
+
 const PriceSchema = new mongoose.Schema({ _id: String, price: String }, { collection: 'price_list' });
 const PriceEntry = mongoose.models.PriceEntry || mongoose.model('PriceEntry', PriceSchema);
 
@@ -123,30 +141,7 @@ async function useMongoAuthState(sessionId) {
     const creds = (await readData('creds')) || initAuthCreds();
 
     return {
-        state: {
-            creds,
-            keys: {
-                get: async (type, ids) => {
-                    const data = {};
-                    await Promise.all(ids.map(async (id) => {
-                        let v = await readData(`${type}-${id}`);
-                        if (type === 'app-state-sync-key' && v) v = proto.Message.AppStateSyncKeyData.fromObject(v);
-                        data[id] = v;
-                    }));
-                    return data;
-                },
-                set: async (data) => {
-                    const tasks = [];
-                    for (const c in data) {
-                        for (const id in data[c]) {
-                            const v = data[c][id];
-                            tasks.push(v ? writeData(`${c}-${id}`, v) : removeData(`${c}-${id}`));
-                        }
-                    }
-                    await Promise.all(tasks);
-                }
-            }
-        },
+        state: { creds, keys: { get: async (type, ids) => { const data = {}; await Promise.all(ids.map(async (id) => { let v = await readData(`${type}-${id}`); if(type === 'app-state-sync-key' && v) v = proto.Message.AppStateSyncKeyData.fromObject(v); data[id] = v; })); return data; }, set: async (data) => { const tasks = []; for (const c in data) for (const id in data[c]) { const v = data[c][id]; tasks.push(v ? writeData(`${c}-${id}`, v) : removeData(`${c}-${id}`)); } await Promise.all(tasks); } } },
         saveCreds: async () => await writeData('creds', creds)
     };
 }
@@ -160,6 +155,11 @@ function extractText(message) {
     return null;
 }
 
+// WhatsApp sometimes addresses a chat by an opaque "@lid" ID instead of
+// the real phone-number-based JID, especially after the LID migration.
+// This checks a message against a target phone number using every JID
+// form Baileys makes available, so number-based rules (like the Mahi
+// rule) still match even when the chat shows up as "@lid".
 function messageMatchesNumber(msg, from, phoneNumber) {
     const targetPn = `${phoneNumber}@s.whatsapp.net`;
     const candidates = [
@@ -171,6 +171,8 @@ function messageMatchesNumber(msg, from, phoneNumber) {
     return candidates.some(jid => jid === targetPn || jid.startsWith(`${phoneNumber}:`) || jid.startsWith(`${phoneNumber}@`));
 }
 
+// Lightweight keyword-based detector for angry/urgent customer messages —
+// no extra AI call needed, so it doesn't slow down replies.
 const URGENT_ANGRY_KEYWORDS = [
     'gussa', 'gussy', 'ghussa', 'jaldi karo', 'jaldi bhejo', 'urgent',
     'fraud', 'scam', 'dhoka', 'dhokha', 'chor', 'chori', 'complaint',
@@ -178,21 +180,21 @@ const URGENT_ANGRY_KEYWORDS = [
     'bakwas', 'faltu', 'ghatiya', 'waste of time', 'time waste',
     'kaha ho', 'kaha reh gaye', 'kab tak', 'bohat late', 'bahut late'
 ];
-
 function isUrgentOrAngry(text) {
     if (!text) return false;
     const lower = text.toLowerCase();
     if (URGENT_ANGRY_KEYWORDS.some(k => lower.includes(k))) return true;
+    // Lots of exclamation marks or ALL-CAPS shouting is also a signal
     if (/!{2,}/.test(text)) return true;
     const letters = text.replace(/[^a-zA-Z]/g, '');
     if (letters.length >= 8 && letters === letters.toUpperCase()) return true;
     return false;
 }
 
-const alertedChats = new Map();
-const ALERT_COOLDOWN = 10 * 60 * 1000;
+const alertedChats = new Map(); // per-chat cooldown so the owner isn't spammed
+const ALERT_COOLDOWN = 10 * 60 * 1000; // 10 minutes
 
-let isStarting = false;
+let isStarting = false; // prevents multiple overlapping sockets from stacking up on reconnect
 
 async function startBot() {
     if (isStarting) return;
@@ -216,6 +218,9 @@ async function startBot() {
         }
     };
 
+    // Sends a customer-facing reply as a spoken voice note instead of text.
+    // Falls back to plain text only if TTS itself fails, so the customer
+    // never gets left with no reply at all.
     const sendVoiceReply = async (toJid, quotedMsg, text) => {
         const audioBuffer = await textToVoiceBuffer(text);
         let sent;
@@ -246,6 +251,9 @@ async function startBot() {
         }, 3000);
     }
 
+    // Per-chat queue: ensures messages from the SAME chat are always
+    // replied to in the order they arrived, even if one reply is slower
+    // (e.g. needed a retry) than a later one.
     const chatQueues = new Map();
     function enqueueForChat(chatId, task) {
         const prev = chatQueues.get(chatId) || Promise.resolve();
@@ -267,6 +275,21 @@ async function startBot() {
             return;
         }
 
+        // Ignore stale/old messages entirely (older than 2 minutes). After
+        // every reconnect or restart, WhatsApp often redelivers "offline"
+        // messages that were already answered before the restart — without
+        // this check, each one silently triggers a brand new AI call and
+        // burns through the daily quota for no real customer benefit.
+        if (msg.messageTimestamp) {
+            const msgAgeMs = Date.now() - (Number(msg.messageTimestamp) * 1000);
+            if (msgAgeMs > 2 * 60 * 1000) {
+                console.log(`Skipped stale message from ${from} (${Math.round(msgAgeMs / 1000)}s old)`);
+                return;
+            }
+        }
+
+        // Dedupe: if this exact incoming message was already processed
+        // (can happen on reconnect/offline-sync replays), skip it silently.
         if (msg.key.id) {
             if (processedIncomingIds.has(msg.key.id)) return;
             processedIncomingIds.add(msg.key.id);
@@ -276,12 +299,15 @@ async function startBot() {
             }
         }
 
+        // Queue the actual handling per-chat so replies stay in order.
         enqueueForChat(from, () => handleMessage(msg, from));
     });
 
     async function handleMessage(msg, from) {
         const body = extractText(msg.message);
 
+        // Temporary diagnostic: helps confirm which JID fields WhatsApp
+        // actually sends for this chat (useful for number-based rules).
         if (body) {
             console.log(`JID CHECK — from: ${from}, remoteJidAlt: ${msg.key?.remoteJidAlt || 'n/a'}, participantAlt: ${msg.key?.participantAlt || 'n/a'}, senderPn: ${msg.key?.senderPn || 'n/a'}`);
         }
@@ -292,55 +318,61 @@ async function startBot() {
                 isGlobalBotActive = true;
                 pausedChats.clear();
                 userChatHistory.clear();
-                await notifyOwner('🕸️ DIANA Connected 🕸️');
+                notifyOwner('🕸️ DIANA Connected 🕸️');
                 return;
             }
             if (cmdBody.toLowerCase() === '.off') {
                 isGlobalBotActive = false;
-                await notifyOwner('⏸️ DIANA Paused');
+                notifyOwner('⏸️ DIANA Paused');
                 return;
             }
+            // .setprice <service name> = <price>
             if (cmdBody.toLowerCase().startsWith('.setprice ')) {
                 const raw = cmdBody.slice('.setprice '.length);
                 const [service, price] = raw.split('=').map(s => s?.trim());
                 if (service && price) {
                     await setPrice(service, price);
-                    await notifyOwner(`✅ Price Set: "${service}" — ${price}`);
+                    notifyOwner(`✅ Price Set: "${service}" — ${price}`);
                 } else {
-                    await notifyOwner('⚠️ Format: .setprice service name = price');
+                    notifyOwner('⚠️ Format: .setprice service name = price');
                 }
                 return;
             }
+            // .delprice <service name>
             if (cmdBody.toLowerCase().startsWith('.delprice ')) {
                 const service = cmdBody.slice('.delprice '.length).trim();
                 await deletePrice(service);
-                await notifyOwner(`🗑️ Price removed for "${service}"`);
+                notifyOwner(`🗑️ Price removed for "${service}"`);
                 return;
             }
+            // .prices — list everything currently set
             if (cmdBody.toLowerCase() === '.prices') {
-                await notifyOwner(`📋 Current Prices:\n${formatPriceList()}`);
+                notifyOwner(`📋 Current Prices:\n${formatPriceList()}`);
                 return;
             }
             if (isGlobalBotActive && body && !cmdBody.startsWith('.')) {
                 pausedChats.set(from, Date.now() + PAUSE_DURATION);
-                await notifyOwner('⏸️ DIANA Paused (manual reply detected)');
+                notifyOwner('⏸️ DIANA Paused (manual reply detected)');
             }
             return;
         }
 
+        // Angry/urgent customer alert — fires regardless of whether the bot
+        // is currently active/paused for this chat, so the owner never
+        // misses a customer who needs immediate human attention.
         if (body && isUrgentOrAngry(body)) {
             const lastAlert = alertedChats.get(from) || 0;
             if (Date.now() - lastAlert > ALERT_COOLDOWN) {
                 alertedChats.set(from, Date.now());
                 const shortNumber = from.split('@')[0];
-                await notifyOwner(`⚠️ Possible angry/urgent customer (${shortNumber}):\n"${body}"`);
+                notifyOwner(`⚠️ Possible angry/urgent customer (${shortNumber}):\n"${body}"`);
             }
         }
 
         if (!isGlobalBotActive || (pausedChats.has(from) && Date.now() < pausedChats.get(from))) return;
 
         if (!body || !body.trim()) {
-            console.log(`Skipped non-text message from ${from}`);
+            console.log(`Skipped non-text message from ${from} (voice/sticker/media without caption)`);
             return;
         }
 
@@ -349,6 +381,9 @@ async function startBot() {
         history.push({ role: "user", content: body });
         if (history.length > MAX_HISTORY_LENGTH) history.shift();
 
+        // Fixed, deterministic replies for exact casual greetings — bypasses
+        // the AI entirely so the same message always gets the same reply
+        // (no randomness) and saves tokens on the most common messages.
         const CANNED_REPLIES = {
             'hi': 'Hn G',
             'hello': 'Hn G',
@@ -515,10 +550,12 @@ Step 6: Only treat a message as a service request if it clearly mentions one of 
 - Reply based on what the user actually sent—don't hallucinate.
 - Use natural conversational capitalization (like a human on WhatsApp). Do not capitalize every word; avoid all caps.
 - Never admit you are a bot, AI, or automated. You are Diana, a real person.
-- If the customer is rude, you may be rude back, but keep it short.
+- If the customer is rude, you may be extremely rude back, but keep it short.
 - In service mode, at most one emoji per message. In casual mode, avoid emojis unless necessary.`;
 
         let replyText;
+        const historyText = history.map(h => `${h.role === 'user' ? 'Customer' : 'You'}: ${h.content}`).join('\n');
+        const geminiPrompt = `${systemPrompt}\n\nConversation so far:\n${historyText}`;
 
         const tryGroq = () => tryWithRotation(groqClients, async (client) => {
             const completion = await client.chat.completions.create({
@@ -526,47 +563,34 @@ Step 6: Only treat a message as a service request if it clearly mentions one of 
                 temperature: 0.4,
                 messages: [{ role: "system", content: systemPrompt }, ...history]
             });
-            return completion.choices[0]?.message?.content?.trim();
+            return completion.choices[0].message.content;
         }, 'Groq');
 
         const tryGemini = () => tryWithRotation(geminiClients, async (client) => {
-            const model = client.getGenerativeModel({
-                model: "gemini-1.5-flash",
-                systemInstruction: systemPrompt,
-                safetySettings: [
-                    { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
-                    { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
-                    { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
-                    { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE }
-                ]
+            const result = await client.models.generateContent({
+                model: "gemini-3.7-flash",
+                contents: geminiPrompt
             });
-
-            const contents = history.map(h => ({
-                role: h.role === 'assistant' ? 'model' : 'user',
-                parts: [{ text: h.content }]
-            }));
-
-            const result = await model.generateContent({ contents });
-            return result.response.text()?.trim();
+            return result.text;
         }, 'Gemini');
 
+        // Sequential, Groq first (fast + saves quota vs calling both every
+        // time). If ALL Groq keys AND ALL Gemini keys fail on the first
+        // pass, do one more full round (Groq again, then Gemini again)
+        // before finally giving up — extra resilience against transient
+        // provider hiccups without burning quota on every single message.
         for (let round = 1; round <= 2 && !replyText; round++) {
             replyText = await tryGroq();
             if (!replyText) replyText = await tryGemini();
         }
 
         if (!replyText) {
-            const FALLBACK_LINES = [
-                'DAINA-01 Disconnected From Server, Reconnecting... 🔌',
-                'Signal Lost. Rebooting DAINA-01... ⚡',
-                'DAINA-01 Offline For A Moment, Syncing Back Up 🛰️',
-                'Connection Dropped. Restoring DAINA-01 Now...',
-                'DAINA-01 Rebooting Core Systems, Standby ⚙️'
-            ];
-            const fallbackText = FALLBACK_LINES[Math.floor(Math.random() * FALLBACK_LINES.length)];
-            try {
-                await sendVoiceReply(from, msg, fallbackText);
-            } catch (e2) { console.log('Fallback send failed:', e2.message); }
+            // Both providers (all keys, both rounds) failed — do NOT send
+            // anything to the customer. Alert the owner privately instead
+            // so they can jump in and reply manually.
+            const shortNumber = from.split('@')[0];
+            const lastMsg = history.length ? history[history.length - 1].content : body;
+            notifyOwner(`🔴 DIANA failed to generate a reply for ${shortNumber}.\nCustomer said: "${lastMsg}"\nPlease reply manually if needed.`);
             return;
         }
 
@@ -574,6 +598,9 @@ Step 6: Only treat a message as a service request if it clearly mentions one of 
         try {
             const isOrderConfirmation = /order\s*confirmed/i.test(replyText);
             if (isOrderConfirmation && orderConfirmedImage) {
+                // Images can't carry audio, so an order-confirmation still
+                // gets the branded image with a text caption, plus the
+                // same reply spoken as a voice note right after it.
                 const sent = await sock.sendMessage(
                     from,
                     { image: orderConfirmedImage, caption: replyText },
@@ -605,7 +632,7 @@ Step 6: Only treat a message as a service request if it clearly mentions one of 
 }
 
 // Connect to MongoDB and start bot
-mongoose.connect(process.env.MONGO_URI || process.env.MONGODB_URI)
+mongoose.connect(process.env.MONGO_URI)
     .then(() => {
         console.log('MongoDB connected successfully.');
         startBot();

@@ -84,6 +84,7 @@ let isGlobalBotActive = true;
 const pausedChats = new Map();
 const userChatHistory = new Map();
 const PAUSE_DURATION = 10 * 60 * 1000;
+const ONE_HOUR = 60 * 60 * 1000; // used by the /owner handoff command
 const MAX_HISTORY_LENGTH = 20;
 
 const botSentMessageIds = new Set();
@@ -313,7 +314,11 @@ async function startBot() {
         }
 
         if (msg.key.fromMe) {
-            const cmdBody = body || '';
+            // Trim + strip invisible/zero-width characters so commands still
+            // match even if the keyboard added a stray trailing space or
+            // hidden character (a common cause of ".on"/".off" silently
+            // failing to match).
+            const cmdBody = (body || '').trim().replace(/[\u200B-\u200D\uFEFF]/g, '');
             if (cmdBody.toLowerCase() === '.on') {
                 isGlobalBotActive = true;
                 pausedChats.clear();
@@ -405,6 +410,22 @@ async function startBot() {
             'apka naam kya hai': 'Diana'
         };
         const normalizedBody = body.trim().toLowerCase().replace(/[!.?]+$/, '');
+
+        // /owner — customer wants to talk to a human. Pause the bot for
+        // this specific chat for 1 hour so the owner can take over, and
+        // let the owner know.
+        if (normalizedBody === '/owner') {
+            pausedChats.set(from, Date.now() + ONE_HOUR);
+            const shortNumber = from.split('@')[0];
+            notifyOwner(`👤 Customer (${shortNumber}) requested to talk to you directly. Bot paused for this chat for 1 hour.`);
+            const ownerHandoffText = 'Connecting You To The Owner, Please Wait 🙏';
+            history.push({ role: "assistant", content: ownerHandoffText });
+            try {
+                await sendVoiceReply(from, msg, ownerHandoffText);
+            } catch (sendErr) { console.log('Send error:', sendErr.message); }
+            return;
+        }
+
         if (CANNED_REPLIES[normalizedBody]) {
             const cannedText = CANNED_REPLIES[normalizedBody];
             history.push({ role: "assistant", content: cannedText });
@@ -438,6 +459,7 @@ You are DAINA-01, a blunt WhatsApp agent who handles both casual chats and high-
 - Special triggers (respond in English):
   ▸ "Who is Arbab?" / "Who is Your Owner" → "Arbab is a digital explorer and glitch hunter ⚡ — someone who looks beyond the obvious, detects flaws others overlook, and turns complex problems into solutions. He doesn't just use technology. He understands how it works."
   ▸ "Where is Arbab?" / "Arbab kahan hai?" → "Arbab is busy. Please wait."
+  ▸ If the customer wants to actually TALK to the owner directly (e.g. "mujhe owner se baat karni hai", "I want to talk to the owner", "connect me to owner") → tell them: "If you want to talk to the owner directly, send /owner"
   ▸ Deeper background/detail questions ONLY — e.g. "Tell me about yourself", "Who created you?", "What are you exactly?", "Give me your details/info", "Diana ke bare mein detail batao" (NOT a plain "what's your name") → "D-I-03367, A State-Of-The-Art Created By Arbab Here At The Cradle. I Possess Basic Deals Handling."
 - ${mahiRule}
 - If anyone speaks respectfully, reply respectfully. If they are rude, match that rudeness in short words.

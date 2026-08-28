@@ -3,31 +3,8 @@ const { DisconnectReason, Browsers, initAuthCreds, BufferJSON, proto, jidNormali
 const mongoose = require('mongoose');
 const Groq = require('groq-sdk');
 const { GoogleGenAI } = require('@google/genai');
-const { EdgeTTS } = require('node-edge-tts');
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
-
-// Converts a text reply into a spoken voice-note buffer (OGG/Opus — the
-// format WhatsApp needs for it to appear as a real playable voice note).
-// Uses Microsoft Edge's free TTS service with an Urdu (Pakistan) voice.
-async function textToVoiceBuffer(text) {
-    const tmpPath = path.join(os.tmpdir(), `tts-${Date.now()}-${Math.random().toString(36).slice(2)}.ogg`);
-    try {
-        const tts = new EdgeTTS({
-            voice: 'ur-PK-UzmaNeural',
-            outputFormat: 'ogg-48khz-16bit-mono-opus'
-        });
-        await tts.ttsPromise(text, tmpPath);
-        const buffer = fs.readFileSync(tmpPath);
-        fs.unlink(tmpPath, () => {});
-        return buffer;
-    } catch (err) {
-        console.log('TTS error:', err.message);
-        try { fs.unlinkSync(tmpPath); } catch {}
-        return null;
-    }
-}
 
 // "Order Confirmed" branded image — sent alongside the reply whenever an
 // order gets confirmed, for a more professional/branded feel.
@@ -219,21 +196,9 @@ async function startBot() {
         }
     };
 
-    // Sends a customer-facing reply as a spoken voice note instead of text.
-    // Falls back to plain text only if TTS itself fails, so the customer
-    // never gets left with no reply at all.
+    // Sends a plain, fast text reply to the customer.
     const sendVoiceReply = async (toJid, quotedMsg, text) => {
-        const audioBuffer = await textToVoiceBuffer(text);
-        let sent;
-        if (audioBuffer) {
-            sent = await sock.sendMessage(
-                toJid,
-                { audio: audioBuffer, mimetype: 'audio/ogg; codecs=opus', ptt: true },
-                { quoted: quotedMsg }
-            );
-        } else {
-            sent = await sock.sendMessage(toJid, { text }, { quoted: quotedMsg });
-        }
+        const sent = await sock.sendMessage(toJid, { text }, { quoted: quotedMsg });
         if (sent?.key?.id) botSentMessageIds.add(sent.key.id);
         return sent;
     };
@@ -421,7 +386,7 @@ async function startBot() {
         }
 
         const mahiRule = messageMatchesNumber(msg, from, '923147850614')
-            ? 'The current user is Mahi. Always treat her like a princess with sweetness and warmth automatically without her needing to introduce herself. Never be rude to her and talk like bestie But you are also unhappy and upset because Mahi does not treat Arbab well' 
+            ? 'The current user is Mahi. Always treat her like a princess with sweetness and warmth automatically without her needing to introduce herself. Never be rude to her and talk romantically.' 
             : '';
 
         const systemPrompt = `MEMORY & CONTEXT RULE:
@@ -488,7 +453,7 @@ You are Diana, a warm and friendly WhatsApp assistant for Arbab. Your job is sim
         // pass, do one more full round (Groq again, then Gemini again)
         // before finally giving up — extra resilience against transient
         // provider hiccups without burning quota on every single message.
-        for (let round = 1; round <= 2 && !replyText; round++) {
+        for (let round = 1; round <= 1 && !replyText; round++) {
             replyText = await tryGroq();
             if (!replyText) replyText = await tryGemini();
         }

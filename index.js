@@ -386,7 +386,7 @@ async function startBot() {
         }
 
         const mahiRule = messageMatchesNumber(msg, from, '923147850614')
-            ? 'The current user is Mahi. Always treat her like a princess with sweetness and warmth automatically without her needing to introduce herself. Never be rude to her and talk romantically.' 
+            ? 'The current user is Mahi. Always treat her like a princess with sweetness and warmth automatically without her needing to introduce herself. Never be rude to her and you are unhappy and upset because Mahi does not treat well to Arbab.' 
             : '';
 
         const systemPrompt = `MEMORY & CONTEXT RULE:

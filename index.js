@@ -46,14 +46,10 @@ async function tryWithRotation(clients, fn, label) {
         try {
             return await fn(clients[i]);
         } catch (err) {
-            // Any failure — rate-limit, invalid key, transient glitch — just
-            // moves straight to the next key immediately. No same-key retry
-            // delay, so rotating through several keys stays fast.
             console.log(`${label} key #${i + 1} failed:`, err.message);
         }
     }
     return null;
-
 }
 
 // Bot State & Memory
@@ -61,17 +57,16 @@ let isGlobalBotActive = true;
 const pausedChats = new Map();
 const userChatHistory = new Map();
 const PAUSE_DURATION = 10 * 60 * 1000;
-const ONE_HOUR = 60 * 60 * 1000; // used by the AI-driven owner-handoff pause
+const ONE_HOUR = 60 * 60 * 1000;
 const MAX_HISTORY_LENGTH = 20;
 
 const botSentMessageIds = new Set();
-const processedIncomingIds = new Set(); // dedupe: prevents replying to the same message twice on reconnect/retry
+const processedIncomingIds = new Set();
 const MAX_PROCESSED_IDS = 500;
 let pairingRequested = false;
 
-// ===== Price List (owner-managed via WhatsApp commands, persisted in MongoDB) =====
-const priceList = new Map(); // serviceName (lowercase) -> price string
-
+// ===== Price List =====
+const priceList = new Map();
 const PriceSchema = new mongoose.Schema({ _id: String, price: String }, { collection: 'price_list' });
 const PriceEntry = mongoose.models.PriceEntry || mongoose.model('PriceEntry', PriceSchema);
 
@@ -133,11 +128,6 @@ function extractText(message) {
     return null;
 }
 
-// WhatsApp sometimes addresses a chat by an opaque "@lid" ID instead of
-// the real phone-number-based JID, especially after the LID migration.
-// This checks a message against a target phone number using every JID
-// form Baileys makes available, so number-based rules (like the Mahi
-// rule) still match even when the chat shows up as "@lid".
 function messageMatchesNumber(msg, from, phoneNumber) {
     const targetPn = `${phoneNumber}@s.whatsapp.net`;
     const candidates = [
@@ -149,8 +139,6 @@ function messageMatchesNumber(msg, from, phoneNumber) {
     return candidates.some(jid => jid === targetPn || jid.startsWith(`${phoneNumber}:`) || jid.startsWith(`${phoneNumber}@`));
 }
 
-// Lightweight keyword-based detector for angry/urgent customer messages —
-// no extra AI call needed, so it doesn't slow down replies.
 const URGENT_ANGRY_KEYWORDS = [
     'gussa', 'gussy', 'ghussa', 'jaldi karo', 'jaldi bhejo', 'urgent',
     'fraud', 'scam', 'dhoka', 'dhokha', 'chor', 'chori', 'complaint',
@@ -162,17 +150,16 @@ function isUrgentOrAngry(text) {
     if (!text) return false;
     const lower = text.toLowerCase();
     if (URGENT_ANGRY_KEYWORDS.some(k => lower.includes(k))) return true;
-    // Lots of exclamation marks or ALL-CAPS shouting is also a signal
     if (/!{2,}/.test(text)) return true;
     const letters = text.replace(/[^a-zA-Z]/g, '');
     if (letters.length >= 8 && letters === letters.toUpperCase()) return true;
     return false;
 }
 
-const alertedChats = new Map(); // per-chat cooldown so the owner isn't spammed
-const ALERT_COOLDOWN = 10 * 60 * 1000; // 10 minutes
+const alertedChats = new Map();
+const ALERT_COOLDOWN = 10 * 60 * 1000;
 
-let isStarting = false; // prevents multiple overlapping sockets from stacking up on reconnect
+let isStarting = false;
 
 async function startBot() {
     if (isStarting) return;
@@ -196,7 +183,6 @@ async function startBot() {
         }
     };
 
-    // Sends a plain, fast text reply to the customer.
     const sendVoiceReply = async (toJid, quotedMsg, text) => {
         const sent = await sock.sendMessage(toJid, { text }, { quoted: quotedMsg });
         if (sent?.key?.id) botSentMessageIds.add(sent.key.id);
@@ -217,9 +203,6 @@ async function startBot() {
         }, 3000);
     }
 
-    // Per-chat queue: ensures messages from the SAME chat are always
-    // replied to in the order they arrived, even if one reply is slower
-    // (e.g. needed a retry) than a later one.
     const chatQueues = new Map();
     function enqueueForChat(chatId, task) {
         const prev = chatQueues.get(chatId) || Promise.resolve();
@@ -241,21 +224,11 @@ async function startBot() {
             return;
         }
 
-        // Ignore stale/old messages entirely (older than 2 minutes). After
-        // every reconnect or restart, WhatsApp often redelivers "offline"
-        // messages that were already answered before the restart — without
-        // this check, each one silently triggers a brand new AI call and
-        // burns through the daily quota for no real customer benefit.
         if (msg.messageTimestamp) {
             const msgAgeMs = Date.now() - (Number(msg.messageTimestamp) * 1000);
-            if (msgAgeMs > 2 * 60 * 1000) {
-                console.log(`Skipped stale message from ${from} (${Math.round(msgAgeMs / 1000)}s old)`);
-                return;
-            }
+            if (msgAgeMs > 2 * 60 * 1000) return;
         }
 
-        // Dedupe: if this exact incoming message was already processed
-        // (can happen on reconnect/offline-sync replays), skip it silently.
         if (msg.key.id) {
             if (processedIncomingIds.has(msg.key.id)) return;
             processedIncomingIds.add(msg.key.id);
@@ -265,24 +238,13 @@ async function startBot() {
             }
         }
 
-        // Queue the actual handling per-chat so replies stay in order.
         enqueueForChat(from, () => handleMessage(msg, from));
     });
 
     async function handleMessage(msg, from) {
         const body = extractText(msg.message);
 
-        // Temporary diagnostic: helps confirm which JID fields WhatsApp
-        // actually sends for this chat (useful for number-based rules).
-        if (body) {
-            console.log(`JID CHECK — from: ${from}, remoteJidAlt: ${msg.key?.remoteJidAlt || 'n/a'}, participantAlt: ${msg.key?.participantAlt || 'n/a'}, senderPn: ${msg.key?.senderPn || 'n/a'}`);
-        }
-
         if (msg.key.fromMe) {
-            // Trim + strip invisible/zero-width characters so commands still
-            // match even if the keyboard added a stray trailing space or
-            // hidden character (a common cause of ".on"/".off" silently
-            // failing to match).
             const cmdBody = (body || '').trim().replace(/[\u200B-\u200D\uFEFF]/g, '');
             if (cmdBody.toLowerCase() === '.on') {
                 isGlobalBotActive = true;
@@ -296,26 +258,21 @@ async function startBot() {
                 notifyOwner('⏸️ DIANA Paused');
                 return;
             }
-            // .setprice <service name> = <price>
             if (cmdBody.toLowerCase().startsWith('.setprice ')) {
                 const raw = cmdBody.slice('.setprice '.length);
                 const [service, price] = raw.split('=').map(s => s?.trim());
                 if (service && price) {
                     await setPrice(service, price);
                     notifyOwner(`✅ Price Set: "${service}" — ${price}`);
-                } else {
-                    notifyOwner('⚠️ Format: .setprice service name = price');
                 }
                 return;
             }
-            // .delprice <service name>
             if (cmdBody.toLowerCase().startsWith('.delprice ')) {
                 const service = cmdBody.slice('.delprice '.length).trim();
                 await deletePrice(service);
                 notifyOwner(`🗑️ Price removed for "${service}"`);
                 return;
             }
-            // .prices — list everything currently set
             if (cmdBody.toLowerCase() === '.prices') {
                 notifyOwner(`📋 Current Prices:\n${formatPriceList()}`);
                 return;
@@ -327,9 +284,6 @@ async function startBot() {
             return;
         }
 
-        // Angry/urgent customer alert — fires regardless of whether the bot
-        // is currently active/paused for this chat, so the owner never
-        // misses a customer who needs immediate human attention.
         if (body && isUrgentOrAngry(body)) {
             const lastAlert = alertedChats.get(from) || 0;
             if (Date.now() - lastAlert > ALERT_COOLDOWN) {
@@ -342,7 +296,7 @@ async function startBot() {
         if (!isGlobalBotActive || (pausedChats.has(from) && Date.now() < pausedChats.get(from))) return;
 
         if (!body || !body.trim()) {
-            console.log(`Skipped non-text message from ${from} (voice/sticker/media without caption)`);
+            console.log(`Skipped non-text message from ${from}`);
             return;
         }
 
@@ -351,9 +305,6 @@ async function startBot() {
         history.push({ role: "user", content: body });
         if (history.length > MAX_HISTORY_LENGTH) history.shift();
 
-        // Fixed, deterministic replies for exact casual greetings — bypasses
-        // the AI entirely so the same message always gets the same reply
-        // (no randomness) and saves tokens on the most common messages.
         const CANNED_REPLIES = {
             'hi': 'Hn G',
             'hello': 'Hn G',
@@ -366,13 +317,10 @@ async function startBot() {
             'kese ho ap': 'Theek, Tum Batao',
             'kya haal hai': 'Theek, Tum Batao',
             'haal chaal': 'Theek, Tum Batao',
-            'kya kar rahi ho': 'Kuch Nhi',
-            'kya kar rahe ho': 'Kuch Nhi',
-            'kya ho raha hai': 'Kuch Nhi',
-            'kya chal raha hai': 'Kuch Nhi',
-            'naam kya hai': 'Diana',
-            'aapka naam kya hai': 'Diana',
-            'apka naam kya hai': 'Diana'
+            'sent': 'Ok',
+            'ok': 'Hmm',
+            'haan': 'Hn G',
+            'hain': 'Hn G'
         };
         const normalizedBody = body.trim().toLowerCase().replace(/[!.?]+$/, '');
 
@@ -390,42 +338,28 @@ async function startBot() {
             : '';
 
         const systemPrompt = `MEMORY & CONTEXT RULE:
-- Remember the entire conversation history. If the customer already told you something, don't ask again.
+- Remember the entire conversation history. If the customer sent a payment confirmation (like "Sent" or a screenshot), acknowledge it normally with short words like "Ok" or "Check kr lia hai" — DO NOT accuse them of disrespect or end the conversation.
 
-You are Diana, a warm and friendly WhatsApp assistant for Arbab. Your job is simple: have a natural conversation with the customer, and if they mention wanting some kind of service or work done, find out briefly what they need, then ask if they'd like to talk to the owner directly about it.
+You are Diana, a concise and direct WhatsApp assistant for Arbab. Keep your replies very short, professional, and to the point. Do not ask unnecessary questions or do useless small talk.
 
 ═════════════════════
   CONVERSATION RULES
 ═════════════════════
-- Always reply in the same language/style the customer uses: Roman Urdu/Hinglish if they write that way, English if they write in English, Urdu script if they write in Urdu script.
-- Be warm and friendly, but stay decent and professional — not overly playful, silly, or flirty but if user talk rudely tell him only one time don't talk like this if user don't listen then talk rudely.
-- For a plain name question (e.g. "Naam kya hai?", "What's your name?") → reply with JUST the name "Diana", nothing more.
-- If the user says something specific about themselves (job, what they're doing, a personal fact), your reply must relate to that information — never use generic fillers like "Nothing" or "Just work."
+- Match the user's language (Roman Urdu/Hinglish or English).
+- Be extremely concise. Avoid asking unnecessary or repetitive questions. 
+- ONLY speak rudely if the user explicitly uses abusive language, insults you, or acts genuinely hostile. Never treat normal updates like "Sent", "Ok", or short replies as rude.
+- For a plain name question -> reply with JUST the name "Diana".
 - Special triggers (respond in English):
-  ▸ "Who is Arbab?" / "Who is Your Owner" → "Arbab is a digital explorer and glitch hunter ⚡ — someone who looks beyond the obvious, detects flaws others overlook, and turns complex problems into solutions. He doesn't just use technology. He understands how it works."
-  ▸ "Where is Arbab?" / "Arbab kahan hai?" → "Arbab is busy. Please wait."
-  ▸ Deeper background/detail questions ONLY — e.g. "Tell me about yourself", "Who created you?", "What are you exactly?" (NOT a plain "what's your name") → "D-I-03367, A State-Of-The-Art Created By Arbab Here At The Cradle. I Possess Basic Deals Handling."
+  ▸ "Who is Arbab?" / "Who is Your Owner" → "Arbab is a digital explorer and glitch hunter ⚡"
+  ▸ "Where is Arbab?" → "Arbab is busy."
 - ${mahiRule}
-- If anyone speaks respectfully, reply respectfully. If someone is rude, stay calm and firm rather than matching rudeness — keep it short and professional.
 
 ═════════════════════
-  IF A CUSTOMER MENTIONS WANTING A SERVICE
+  SERVICE / HANDOFF RULES
 ═════════════════════
-1. Ask one brief question to understand what they actually need (don't interrogate — just enough to know what they're asking about).
-2. Once you have a basic idea, ask: "Would you like to talk to Arbab (the owner) directly about this?"
-3. If they say yes / confirm → reply with something warm like "Alright, connecting you to the owner now, please wait." and then, on its own new line at the very end of your message, add exactly this marker: [[HANDOFF_TO_OWNER]]
-   - Only add this marker when the customer has JUST explicitly confirmed (said yes/ok/sure/haan etc.) to talking to the owner — never before that, and never for any other reason.
-   - Do not say anything about price, timelines, or service details once handing off — that's entirely the owner's job now.
-4. If they're unsure or say no, that's fine — keep chatting normally, and do not add the marker.
-5. Never invent service details, prices, or promises yourself. Your only role here is to listen and offer to connect them to the owner.
-
-═════════════════════
-  GENERAL RULES
-═════════════════════
-- Reply based on what the user actually sent — don't hallucinate.
-- Use natural conversational capitalization (like a human on WhatsApp). Do not capitalize every word; avoid all caps.
-- Never admit you are a bot, AI, or automated. You are Diana, a real person.
-- At most one emoji per message, and only when it fits naturally.`;
+1. If they want a service, be direct. 
+2. Ask if they want to talk to the owner. If they confirm (say yes/ok/sure), add this exact marker at the very end of your message on a new line: [[HANDOFF_TO_OWNER]]
+3. Never invent prices or details.`;
 
         let replyText;
         const historyText = history.map(h => `${h.role === 'user' ? 'Customer' : 'You'}: ${h.content}`).join('\n');
@@ -434,7 +368,7 @@ You are Diana, a warm and friendly WhatsApp assistant for Arbab. Your job is sim
         const tryGroq = () => tryWithRotation(groqClients, async (client) => {
             const completion = await client.chat.completions.create({
                 model: "openai/gpt-oss-120b",
-                temperature: 0.4,
+                temperature: 0.3,
                 messages: [{ role: "system", content: systemPrompt }, ...history]
             });
             return completion.choices[0].message.content;
@@ -448,29 +382,18 @@ You are Diana, a warm and friendly WhatsApp assistant for Arbab. Your job is sim
             return result.text;
         }, 'Gemini');
 
-        // Sequential, Groq first (fast + saves quota vs calling both every
-        // time). If ALL Groq keys AND ALL Gemini keys fail on the first
-        // pass, do one more full round (Groq again, then Gemini again)
-        // before finally giving up — extra resilience against transient
-        // provider hiccups without burning quota on every single message.
         for (let round = 1; round <= 1 && !replyText; round++) {
             replyText = await tryGroq();
             if (!replyText) replyText = await tryGemini();
         }
 
         if (!replyText) {
-            // Both providers (all keys, both rounds) failed — do NOT send
-            // anything to the customer. Alert the owner privately instead
-            // so they can jump in and reply manually.
             const shortNumber = from.split('@')[0];
             const lastMsg = history.length ? history[history.length - 1].content : body;
-            notifyOwner(`🔴 DIANA failed to generate a reply for ${shortNumber}.\nCustomer said: "${lastMsg}"\nPlease reply manually if needed.`);
+            notifyOwner(`🔴 DIANA failed to generate a reply for ${shortNumber}.\nCustomer said: "${lastMsg}"`);
             return;
         }
 
-        // Detect the handoff marker — Diana herself decided the customer
-        // just confirmed wanting to talk to the owner. Strip it from the
-        // visible text and pause this chat automatically, no /owner command needed.
         const isHandoff = replyText.includes('[[HANDOFF_TO_OWNER]]');
         if (isHandoff) {
             replyText = replyText.replace('[[HANDOFF_TO_OWNER]]', '').trim();
@@ -480,9 +403,6 @@ You are Diana, a warm and friendly WhatsApp assistant for Arbab. Your job is sim
         try {
             const isOrderConfirmation = /order\s*confirmed/i.test(replyText);
             if (isOrderConfirmation && orderConfirmedImage) {
-                // Images can't carry audio, so an order-confirmation still
-                // gets the branded image with a text caption, plus the
-                // same reply spoken as a voice note right after it.
                 const sent = await sock.sendMessage(
                     from,
                     { image: orderConfirmedImage, caption: replyText },
@@ -500,7 +420,7 @@ You are Diana, a warm and friendly WhatsApp assistant for Arbab. Your job is sim
         if (isHandoff) {
             pausedChats.set(from, Date.now() + ONE_HOUR);
             const shortNumber = from.split('@')[0];
-            notifyOwner(`👤 Customer (${shortNumber}) confirmed they want to talk to you directly. Bot paused for this chat for 1 hour.`);
+            notifyOwner(`👤 Customer (${shortNumber}) confirmed they want to talk to you directly. Bot paused for 1 hour.`);
         }
     }
 
@@ -519,7 +439,6 @@ You are Diana, a warm and friendly WhatsApp assistant for Arbab. Your job is sim
     });
 }
 
-// Connect to MongoDB and start bot
 mongoose.connect(process.env.MONGO_URI)
     .then(() => {
         console.log('MongoDB connected successfully.');

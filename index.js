@@ -503,7 +503,7 @@ You are Diana, a concise and direct WhatsApp assistant for Arbab. Keep your repl
 
         if (isHandoff) {
             pausedChats.set(chatId, Date.now() + ONE_HOUR);
-            const ownerReplyUrl = "https://github.com/qurban01/Reacted-to/raw/refs/heads/main/New%20Owner.ogg";
+            const ownerReplyUrl = "https://github.com/qurban01/Reacted-to/raw/refs/heads/main/New%20Owner_1788121338977.ogg";
             await sendAudioUrl(from, msg, ownerReplyUrl);
             const shortNumber = from.split('@')[0];
             notifyOwner(`👤 Customer (${shortNumber}) confirmed they want to talk to you directly. Bot paused for 1 hour.`);

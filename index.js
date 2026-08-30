@@ -6,8 +6,6 @@ const { GoogleGenAI } = require('@google/genai');
 const fs = require('fs');
 const path = require('path');
 
-// "Order Confirmed" branded image — sent alongside the reply whenever an
-// order gets confirmed, for a more professional/branded feel.
 const orderConfirmedImagePath = path.join(__dirname, 'images', 'order-confirmed.png');
 const orderConfirmedImage = fs.existsSync(orderConfirmedImagePath)
     ? fs.readFileSync(orderConfirmedImagePath)
@@ -16,7 +14,6 @@ if (!orderConfirmedImage) {
     console.log('Note: images/order-confirmed.png not found — order confirmations will be text-only.');
 }
 
-// Support multiple comma-separated API keys per provider
 function parseKeys(envValue) {
     if (!envValue) return [];
     return envValue.split(',').map(k => k.trim()).filter(Boolean);
@@ -28,7 +25,6 @@ const groqClients = groqKeys.map(key => new Groq({ apiKey: key }));
 const geminiKeys = parseKeys(process.env.GEMINI_API_KEY);
 const geminiClients = geminiKeys.map(key => new GoogleGenAI({ apiKey: key }));
 
-// Tries each client in order, returns the first successful result.
 async function tryWithRotation(clients, fn, label) {
     for (let i = 0; i < clients.length; i++) {
         try {
@@ -171,6 +167,7 @@ const URGENT_ANGRY_KEYWORDS = [
     'bakwas', 'faltu', 'ghatiya', 'waste of time', 'time waste',
     'kaha ho', 'kaha reh gaye', 'kab tak', 'bohat late', 'bahut late'
 ];
+
 function isUrgentOrAngry(text) {
     if (!text) return false;
     const lower = text.toLowerCase();
@@ -353,7 +350,7 @@ async function startBot() {
                 pausedChats.set(chatId, Date.now() + pauseTime);
 
                 if (isOwnerHandoff) {
-                    const ownerReplyUrl = "https://github.com/qurban01/Reacted-to/raw/refs/heads/main/Owner%20Reply.mp3";
+                    const ownerReplyUrl = "https://github.com/qurban01/Reacted-to/raw/refs/heads/main/New%20Owner.ogg";
                     await sendAudioUrl(from, msg, ownerReplyUrl);
                 }
 
@@ -362,7 +359,6 @@ async function startBot() {
             return;
         }
 
-        // Custom command / keyword voice mapping matching exact words/emotions
         if (body) {
             const lowerBody = body.toLowerCase().trim();
             if (voiceClips.has(lowerBody)) {
@@ -507,7 +503,7 @@ You are Diana, a concise and direct WhatsApp assistant for Arbab. Keep your repl
 
         if (isHandoff) {
             pausedChats.set(chatId, Date.now() + ONE_HOUR);
-            const ownerReplyUrl = "https://github.com/qurban01/Reacted-to/raw/refs/heads/main/Owner%20Reply.mp3";
+            const ownerReplyUrl = "https://github.com/qurban01/Reacted-to/raw/refs/heads/main/New%20Owner.ogg";
             await sendAudioUrl(from, msg, ownerReplyUrl);
             const shortNumber = from.split('@')[0];
             notifyOwner(`👤 Customer (${shortNumber}) confirmed they want to talk to you directly. Bot paused for 1 hour.`);

@@ -6,19 +6,11 @@ const { GoogleGenAI } = require('@google/genai');
 const fs = require('fs');
 const path = require('path');
 
-// "Order Confirmed" branded image — sent alongside the reply whenever an
-// order gets confirmed, for a more professional/branded feel.
 const orderConfirmedImagePath = path.join(__dirname, 'images', 'order-confirmed.png');
 const orderConfirmedImage = fs.existsSync(orderConfirmedImagePath)
     ? fs.readFileSync(orderConfirmedImagePath)
     : null;
-if (!orderConfirmedImage) {
-    console.log('Note: images/order-confirmed.png not found — order confirmations will be text-only.');
-}
 
-// Support multiple comma-separated API keys per provider (e.g. from several
-// free accounts) — the bot rotates to the next key automatically when one
-// hits its rate limit, multiplying total daily capacity.
 function parseKeys(envValue) {
     if (!envValue) return [];
     return envValue.split(',').map(k => k.trim()).filter(Boolean);
@@ -30,34 +22,12 @@ const groqClients = groqKeys.map(key => new Groq({ apiKey: key }));
 const geminiKeys = parseKeys(process.env.GEMINI_API_KEY);
 const geminiClients = geminiKeys.map(key => new GoogleGenAI({ apiKey: key }));
 
-// Temporary diagnostic: shows how many keys were parsed and a safe
-// preview of each (first 10 chars + total length) — no full key exposed.
-console.log(`ENV CHECK — parsed ${groqKeys.length} Groq key(s), ${geminiKeys.length} Gemini key(s):`);
-groqKeys.forEach((k, i) => {
-    console.log(`  Groq Key #${i + 1}: starts with "${k.slice(0, 10)}", length ${k.length}`);
-});
-geminiKeys.forEach((k, i) => {
-    console.log(`  Gemini Key #${i + 1}: starts with "${k.slice(0, 10)}", length ${k.length}`);
-});
-
-// Tries each client in order, returns the first successful result.
-async function tryWithRotation(clients, fn, label) {
-    for (let i = 0; i < clients.length; i++) {
-        try {
-            return await fn(clients[i]);
-        } catch (err) {
-            console.log(`${label} key #${i + 1} failed:`, err.message);
-        }
-    }
-    return null;
-}
-
 // Bot State & Memory
 let isGlobalBotActive = true;
 const pausedChats = new Map();
 const userChatHistory = new Map();
-const PAUSE_DURATION = 10 * 60 * 1000;
-const ONE_HOUR = 60 * 60 * 1000;
+const PAUSE_DURATION = 5 * 60 * 1000; // 5 minutes default
+const ONE_HOUR = 60 * 60 * 1000;      // 1 hour for owner handoff
 const MAX_HISTORY_LENGTH = 20;
 
 const botSentMessageIds = new Set();
@@ -65,7 +35,7 @@ const processedIncomingIds = new Set();
 const MAX_PROCESSED_IDS = 500;
 let pairingRequested = false;
 
-// ===== Price List =====
+// ===== Price List (MongoDB) =====
 const priceList = new Map();
 const PriceSchema = new mongoose.Schema({ _id: String, price: String }, { collection: 'price_list' });
 const PriceEntry = mongoose.models.PriceEntry || mongoose.model('PriceEntry', PriceSchema);
@@ -75,7 +45,6 @@ async function loadPriceList() {
         const docs = await PriceEntry.find({}).lean();
         priceList.clear();
         docs.forEach(d => priceList.set(d._id, d.price));
-        console.log(`Loaded ${priceList.size} price entries from MongoDB.`);
     } catch (err) {
         console.log('Could not load price list:', err.message);
     }
@@ -96,6 +65,38 @@ async function deletePrice(service) {
 function formatPriceList() {
     if (priceList.size === 0) return 'No prices set yet.';
     return [...priceList.entries()].map(([k, v]) => `• ${k} — ${v}`).join('\n');
+}
+
+// ===== Custom Voice Clips (GitHub Raw URLs) =====
+const voiceClips = new Map();
+const VoiceSchema = new mongoose.Schema({ _id: String, url: String }, { collection: 'voice_clips' });
+const VoiceEntry = mongoose.models.VoiceEntry || mongoose.model('VoiceEntry', VoiceSchema);
+
+async function loadVoiceClips() {
+    try {
+        const docs = await VoiceEntry.find({}).lean();
+        voiceClips.clear();
+        docs.forEach(d => voiceClips.set(d._id, d.url));
+    } catch (err) {
+        console.log('Could not load voice clips:', err.message);
+    }
+}
+
+async function setVoiceClip(tag, url) {
+    const key = tag.trim().toLowerCase();
+    voiceClips.set(key, url.trim());
+    await VoiceEntry.findByIdAndUpdate(key, { url: url.trim() }, { upsert: true });
+}
+
+async function deleteVoiceClip(tag) {
+    const key = tag.trim().toLowerCase();
+    voiceClips.delete(key);
+    await VoiceEntry.findByIdAndDelete(key);
+}
+
+function formatVoiceClips() {
+    if (voiceClips.size === 0) return 'No voice clips set yet.';
+    return [...voiceClips.entries()].map(([k, v]) => `• ${k} — ${v}`).join('\n');
 }
 
 // ===== MongoDB Auth =====
@@ -128,15 +129,8 @@ function extractText(message) {
     return null;
 }
 
-function messageMatchesNumber(msg, from, phoneNumber) {
-    const targetPn = `${phoneNumber}@s.whatsapp.net`;
-    const candidates = [
-        from,
-        msg.key?.remoteJidAlt,
-        msg.key?.participantAlt,
-        msg.key?.senderPn
-    ].filter(Boolean);
-    return candidates.some(jid => jid === targetPn || jid.startsWith(`${phoneNumber}:`) || jid.startsWith(`${phoneNumber}@`));
+function canonicalChatId(msg, from) {
+    return msg.key?.remoteJidAlt || from;
 }
 
 const URGENT_ANGRY_KEYWORDS = [
@@ -146,6 +140,7 @@ const URGENT_ANGRY_KEYWORDS = [
     'bakwas', 'faltu', 'ghatiya', 'waste of time', 'time waste',
     'kaha ho', 'kaha reh gaye', 'kab tak', 'bohat late', 'bahut late'
 ];
+
 function isUrgentOrAngry(text) {
     if (!text) return false;
     const lower = text.toLowerCase();
@@ -158,13 +153,14 @@ function isUrgentOrAngry(text) {
 
 const alertedChats = new Map();
 const ALERT_COOLDOWN = 10 * 60 * 1000;
-
 let isStarting = false;
 
 async function startBot() {
     if (isStarting) return;
     isStarting = true;
     await loadPriceList();
+    await loadVoiceClips();
+    
     const { state, saveCreds } = await useMongoAuthState('daina-session');
     const { version } = await fetchLatestBaileysVersion();
     const sock = makeWASocket({ auth: state, version, printQRInTerminal: false, browser: Browsers.ubuntu('Chrome'), syncFullHistory: false });
@@ -183,10 +179,28 @@ async function startBot() {
         }
     };
 
-    const sendVoiceReply = async (toJid, quotedMsg, text) => {
-        const sent = await sock.sendMessage(toJid, { text }, { quoted: quotedMsg });
-        if (sent?.key?.id) botSentMessageIds.add(sent.key.id);
-        return sent;
+    const sendAudioUrl = async (toJid, quotedMsg, url) => {
+        try {
+            const res = await fetch(url);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const buffer = Buffer.from(await res.arrayBuffer());
+            const sent = await sock.sendMessage(
+                toJid,
+                { audio: buffer, mimetype: 'audio/ogg; codecs=opus', ptt: true },
+                { quoted: quotedMsg }
+            );
+            if (sent?.key?.id) botSentMessageIds.add(sent.key.id);
+            return true;
+        } catch (err) {
+            console.log(`Audio clip failed:`, err.message);
+            return false;
+        }
+    };
+
+    const sendCustomVoiceClip = async (toJid, quotedMsg, tag) => {
+        const url = voiceClips.get(tag.trim().toLowerCase());
+        if (!url) return false;
+        return await sendAudioUrl(toJid, quotedMsg, url);
     };
 
     if (!state.creds.registered && process.env.PHONE_NUMBER && !pairingRequested) {
@@ -194,9 +208,7 @@ async function startBot() {
         setTimeout(async () => {
             try {
                 const code = await sock.requestPairingCode(process.env.PHONE_NUMBER);
-                console.log('\n==========================================');
-                console.log(`YOUR WA PAIRING CODE IS: ${code}`);
-                console.log('==========================================\n');
+                console.log(`\nYOUR WA PAIRING CODE IS: ${code}\n`);
             } catch (err) {
                 console.log('Error getting pairing code:', err.message);
             }
@@ -243,9 +255,11 @@ async function startBot() {
 
     async function handleMessage(msg, from) {
         const body = extractText(msg.message);
+        const chatId = canonicalChatId(msg, from);
 
         if (msg.key.fromMe) {
             const cmdBody = (body || '').trim().replace(/[\u200B-\u200D\uFEFF]/g, '');
+            
             if (cmdBody.toLowerCase() === '.on') {
                 isGlobalBotActive = true;
                 pausedChats.clear();
@@ -267,183 +281,63 @@ async function startBot() {
                 }
                 return;
             }
-            if (cmdBody.toLowerCase().startsWith('.delprice ')) {
-                const service = cmdBody.slice('.delprice '.length).trim();
-                await deletePrice(service);
-                notifyOwner(`🗑️ Price removed for "${service}"`);
+            if (cmdBody.toLowerCase().startsWith('.setvoice ')) {
+                const raw = cmdBody.slice('.setvoice '.length);
+                const [tag, url] = raw.split('=').map(s => s?.trim());
+                if (tag && url) {
+                    await setVoiceClip(tag, url);
+                    notifyOwner(`✅ Voice Clip Set: "${tag}"`);
+                }
                 return;
             }
-            if (cmdBody.toLowerCase() === '.prices') {
-                notifyOwner(`📋 Current Prices:\n${formatPriceList()}`);
-                return;
-            }
+
             if (isGlobalBotActive && body && !cmdBody.startsWith('.')) {
-                pausedChats.set(from, Date.now() + PAUSE_DURATION);
-                notifyOwner('⏸️ DIANA Paused (manual reply detected)');
+                const history = userChatHistory.get(chatId) || [];
+                const isOwnerHandoff = history.some(h => 
+                    h.role === 'user' && /owner|human|admin|real person|manager|contact|baat/i.test(h.content)
+                );
+                
+                const pauseTime = isOwnerHandoff ? ONE_HOUR : PAUSE_DURATION;
+                pausedChats.set(chatId, Date.now() + pauseTime);
+
+                // Agar owner handoff trigger hua hai, to specific GitHub raw audio link send karein as a reply
+                if (isOwnerHandoff) {
+                    const ownerReplyUrl = "https://github.com/qurban01/Reacted-to/raw/refs/heads/main/Owner%20Reply.mp3";
+                    await sendAudioUrl(from, msg, ownerReplyUrl);
+                }
+
+                notifyOwner(`⏸️ DIANA Paused for ${isOwnerHandoff ? '1 Hour (Owner Handoff)' : '5 Minutes'}`);
             }
             return;
+        }
+
+        // Custom keyword / emotion based responses (e.g. greeting or text match)
+        if (body) {
+            const lowerBody = body.toLowerCase().trim();
+            if (voiceClips.has(lowerBody)) {
+                await sendCustomVoiceClip(from, msg, lowerBody);
+                return;
+            }
         }
 
         if (body && isUrgentOrAngry(body)) {
-            const lastAlert = alertedChats.get(from) || 0;
+            const lastAlert = alertedChats.get(chatId) || 0;
             if (Date.now() - lastAlert > ALERT_COOLDOWN) {
-                alertedChats.set(from, Date.now());
+                alertedChats.set(chatId, Date.now());
                 const shortNumber = from.split('@')[0];
                 notifyOwner(`⚠️ Possible angry/urgent customer (${shortNumber}):\n"${body}"`);
+                await sendCustomVoiceClip(from, msg, 'rude');
             }
         }
 
-        if (!isGlobalBotActive || (pausedChats.has(from) && Date.now() < pausedChats.get(from))) return;
+        if (!isGlobalBotActive || (pausedChats.has(chatId) && Date.now() < pausedChats.get(chatId))) return;
+        if (!body || !body.trim()) return;
 
-        if (!body || !body.trim()) {
-            console.log(`Skipped non-text message from ${from}`);
-            return;
-        }
-
-        if (!userChatHistory.has(from)) userChatHistory.set(from, []);
-        const history = userChatHistory.get(from);
-        history.push({ role: "user", content: body });
+        if (!userChatHistory.has(chatId)) userChatHistory.set(chatId, []);
+        const history = userChatHistory.get(chatId);
+        history.push({ role: 'user', content: body });
         if (history.length > MAX_HISTORY_LENGTH) history.shift();
-
-        const CANNED_REPLIES = {
-            'hi': 'Hn G',
-            'hello': 'Hn G',
-            'hey': 'Hn G',
-            'kese ho': 'Theek, Tum Batao',
-            'kaise ho': 'Theek, Tum Batao',
-            'kaisa ho': 'Theek, Tum Batao',
-            'kisa ho': 'Theek, Tum Batao',
-            'kesa ho': 'Theek, Tum Batao',
-            'kese ho ap': 'Theek, Tum Batao',
-            'kya haal hai': 'Theek, Tum Batao',
-            'haal chaal': 'Theek, Tum Batao',
-            'sent': 'Ok',
-            'ok': 'Hmm',
-            'haan': 'Hn G',
-            'hain': 'Hn G'
-        };
-        const normalizedBody = body.trim().toLowerCase().replace(/[!.?]+$/, '');
-
-        if (CANNED_REPLIES[normalizedBody]) {
-            const cannedText = CANNED_REPLIES[normalizedBody];
-            history.push({ role: "assistant", content: cannedText });
-            try {
-                await sendVoiceReply(from, msg, cannedText);
-            } catch (sendErr) { console.log('Send error:', sendErr.message); }
-            return;
-        }
-
-        const mahiRule = messageMatchesNumber(msg, from, '923147850614')
-            ? 'The current user is Mahi. Always treat her like a princess with sweetness and warmth automatically without her needing to introduce herself. Never be rude to her and you are unhappy and upset because Mahi does not treat well to Arbab.' 
-            : '';
-
-        const systemPrompt = `MEMORY & CONTEXT RULE:
-- Remember the entire conversation history. If the customer sent a payment confirmation (like "Sent" or a screenshot), acknowledge it normally with short words like "Ok" or "Check kr lia hai" — DO NOT accuse them of disrespect or end the conversation.
-
-You are Diana, a concise and direct WhatsApp assistant for Arbab. Keep your replies very short, professional, and to the point. Do not ask unnecessary questions or do useless small talk.
-
-═════════════════════
-  CONVERSATION RULES
-═════════════════════
-- Match the user's language (Roman Urdu/Hinglish or English).
-- Be extremely concise. Avoid asking unnecessary or repetitive questions. 
-- ONLY speak rudely if the user explicitly uses abusive language, insults you, or acts genuinely hostile. Never treat normal updates like "Sent", "Ok", or short replies as rude.
-- For a plain name question -> reply with JUST the name "Diana".
-- Special triggers (respond in English):
-  ▸ "Who is Arbab?" / "Who is Your Owner" → "Arbab is a digital explorer and glitch hunter ⚡"
-  ▸ "Where is Arbab?" → "Arbab is busy."
-- ${mahiRule}
-
-═════════════════════
-  SERVICE / HANDOFF RULES
-═════════════════════
-1. If they want a service, be direct. 
-2. Ask if they want to talk to the owner. If they confirm (say yes/ok/sure), add this exact marker at the very end of your message on a new line: [[HANDOFF_TO_OWNER]]
-3. Never invent prices or details.`;
-
-        let replyText;
-        const historyText = history.map(h => `${h.role === 'user' ? 'Customer' : 'You'}: ${h.content}`).join('\n');
-        const geminiPrompt = `${systemPrompt}\n\nConversation so far:\n${historyText}`;
-
-        const tryGroq = () => tryWithRotation(groqClients, async (client) => {
-            const completion = await client.chat.completions.create({
-                model: "openai/gpt-oss-120b",
-                temperature: 0.3,
-                messages: [{ role: "system", content: systemPrompt }, ...history]
-            });
-            return completion.choices[0].message.content;
-        }, 'Groq');
-
-        const tryGemini = () => tryWithRotation(geminiClients, async (client) => {
-            const result = await client.models.generateContent({
-                model: "gemini-3.7-flash",
-                contents: geminiPrompt
-            });
-            return result.text;
-        }, 'Gemini');
-
-        for (let round = 1; round <= 1 && !replyText; round++) {
-            replyText = await tryGroq();
-            if (!replyText) replyText = await tryGemini();
-        }
-
-        if (!replyText) {
-            const shortNumber = from.split('@')[0];
-            const lastMsg = history.length ? history[history.length - 1].content : body;
-            notifyOwner(`🔴 DIANA failed to generate a reply for ${shortNumber}.\nCustomer said: "${lastMsg}"`);
-            return;
-        }
-
-        const isHandoff = replyText.includes('[[HANDOFF_TO_OWNER]]');
-        if (isHandoff) {
-            replyText = replyText.replace('[[HANDOFF_TO_OWNER]]', '').trim();
-        }
-
-        history.push({ role: "assistant", content: replyText });
-        try {
-            const isOrderConfirmation = /order\s*confirmed/i.test(replyText);
-            if (isOrderConfirmation && orderConfirmedImage) {
-                const sent = await sock.sendMessage(
-                    from,
-                    { image: orderConfirmedImage, caption: replyText },
-                    { quoted: msg }
-                );
-                if (sent?.key?.id) botSentMessageIds.add(sent.key.id);
-                await sendVoiceReply(from, msg, replyText);
-            } else {
-                await sendVoiceReply(from, msg, replyText);
-            }
-        } catch (sendErr) {
-            console.log('Send error:', sendErr.message);
-        }
-
-        if (isHandoff) {
-            pausedChats.set(from, Date.now() + ONE_HOUR);
-            const shortNumber = from.split('@')[0];
-            notifyOwner(`👤 Customer (${shortNumber}) confirmed they want to talk to you directly. Bot paused for 1 hour.`);
-        }
     }
-
-    sock.ev.on('connection.update', (u) => {
-        if (u.connection === 'open') {
-            isStarting = false;
-            console.log('DIANA Active');
-            notifyOwner('✅ DIANA Connected');
-        } else if (u.connection === 'close') {
-            isStarting = false;
-            const statusCode = u.lastDisconnect?.error?.output?.statusCode;
-            const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-            console.log('Connection closed. Reconnecting:', shouldReconnect);
-            if (shouldReconnect) startBot();
-        }
-    });
 }
 
-mongoose.connect(process.env.MONGO_URI)
-    .then(() => {
-        console.log('MongoDB connected successfully.');
-        startBot();
-    })
-    .catch(err => {
-        console.log('MongoDB connection error:', err.message);
-    });
+startBot();

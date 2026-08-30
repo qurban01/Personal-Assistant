@@ -207,6 +207,7 @@ async function startBot() {
         }
     };
 
+    // Updated safe audio sender (bypasses strict WhatsApp formatting crashes)
     const sendAudioUrl = async (toJid, quotedMsg, url) => {
         try {
             const res = await fetch(url);
@@ -214,7 +215,7 @@ async function startBot() {
             const buffer = Buffer.from(await res.arrayBuffer());
             const sent = await sock.sendMessage(
                 toJid,
-                { audio: buffer, mimetype: 'audio/ogg; codecs=opus', ptt: true },
+                { audio: buffer, mimetype: 'audio/mp4' }, 
                 { quoted: quotedMsg }
             );
             if (sent?.key?.id) botSentMessageIds.add(sent.key.id);
@@ -350,7 +351,7 @@ async function startBot() {
                 pausedChats.set(chatId, Date.now() + pauseTime);
 
                 if (isOwnerHandoff) {
-                    const ownerReplyUrl = "https://github.com/qurban01/Reacted-to/raw/refs/heads/main/New%20Owner.ogg";
+                    const ownerReplyUrl = "https://github.com/qurban01/Reacted-to/raw/refs/heads/main/New%20Owner_1788121338977.ogg";
                     await sendAudioUrl(from, msg, ownerReplyUrl);
                 }
 

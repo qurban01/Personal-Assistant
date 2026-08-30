@@ -205,19 +205,23 @@ async function startBot() {
         }
     };
 
-    // Yahan Baileys ka built-in URL support use kiya hai
-    // Ye buffer corrupt nahi hone dega aur sahi mimetype automatically lagayega
+    // BULLETPROOF AUDIO SENDER
+    // Is method se file background mein pehle download hogi (buffer) aur phir WhatsApp player ke hisab se safe format mein send hogi.
     const sendAudioUrl = async (toJid, quotedMsg, url) => {
         try {
-            const isOgg = url.toLowerCase().endsWith('.ogg');
+            const res = await fetch(url);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const buffer = Buffer.from(await res.arrayBuffer());
+            
             const sent = await sock.sendMessage(
                 toJid,
                 { 
-                    audio: { url: url }, 
-                    mimetype: isOgg ? 'audio/ogg' : 'audio/mpeg'
+                    audio: buffer, 
+                    mimetype: 'audio/mpeg' // Ye format MP3/OGG dono files ko crash kiye bina WhatsApp mein play karta hai
                 }, 
                 { quoted: quotedMsg }
             );
+            
             if (sent?.key?.id) botSentMessageIds.add(sent.key.id);
             return true;
         } catch (err) {

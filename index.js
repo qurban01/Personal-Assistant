@@ -59,7 +59,6 @@ async function loadPriceList() {
         const docs = await PriceEntry.find({}).lean();
         priceList.clear();
         docs.forEach(d => priceList.set(d._id, d.price));
-        console.log(`Loaded ${priceList.size} price entries from MongoDB.`);
     } catch (err) {
         console.log('Could not load price list:', err.message);
     }
@@ -92,7 +91,6 @@ async function loadVoiceClips() {
         const docs = await VoiceEntry.find({}).lean();
         voiceClips.clear();
         docs.forEach(d => voiceClips.set(d._id, d.url));
-        console.log(`Loaded ${voiceClips.size} voice clip(s) from MongoDB.`);
     } catch (err) {
         console.log('Could not load voice clips:', err.message);
     }
@@ -207,15 +205,17 @@ async function startBot() {
         }
     };
 
-    // Updated safe audio sender (bypasses strict WhatsApp formatting crashes)
+    // Yahan Baileys ka built-in URL support use kiya hai
+    // Ye buffer corrupt nahi hone dega aur sahi mimetype automatically lagayega
     const sendAudioUrl = async (toJid, quotedMsg, url) => {
         try {
-            const res = await fetch(url);
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            const buffer = Buffer.from(await res.arrayBuffer());
+            const isOgg = url.toLowerCase().endsWith('.ogg');
             const sent = await sock.sendMessage(
                 toJid,
-                { audio: buffer, mimetype: 'audio/mp4' }, 
+                { 
+                    audio: { url: url }, 
+                    mimetype: isOgg ? 'audio/ogg' : 'audio/mpeg'
+                }, 
                 { quoted: quotedMsg }
             );
             if (sent?.key?.id) botSentMessageIds.add(sent.key.id);
@@ -381,7 +381,6 @@ async function startBot() {
         if (!isGlobalBotActive || (pausedChats.has(chatId) && Date.now() < pausedChats.get(chatId))) return;
 
         if (!body || !body.trim()) {
-            console.log(`Skipped non-text message from ${from}`);
             return;
         }
 

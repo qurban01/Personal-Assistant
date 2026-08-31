@@ -40,7 +40,7 @@ async function tryWithRotation(clients, fn, label) {
 let isGlobalBotActive = true;
 const pausedChats = new Map();
 const userChatHistory = new Map();
-const spamTracker = new Map(); // Anti-Spam Tracker
+const spamTracker = new Map(); 
 const PAUSE_DURATION = 10 * 60 * 1000;
 const ONE_HOUR = 60 * 60 * 1000;
 const MAX_HISTORY_LENGTH = 20;
@@ -51,8 +51,8 @@ const MAX_PROCESSED_IDS = 500;
 let pairingRequested = false;
 
 // ===== Anti-Spam Settings =====
-const SPAM_LIMIT = 5; // Max messages
-const SPAM_WINDOW = 10000; // In 10 seconds
+const SPAM_LIMIT = 5; 
+const SPAM_WINDOW = 10000; 
 
 // ===== Blocked Users (MongoDB) =====
 const blockedUsers = new Set();
@@ -341,20 +341,22 @@ async function startBot() {
 
         if (msg.key.fromMe) {
             const cmdBody = (body || '').trim().replace(/[\u200B-\u200D\uFEFF]/g, '');
+            
+            // Commands for the Owner (Replies directly in the active chat)
             if (cmdBody.toLowerCase() === '.on') {
                 isGlobalBotActive = true;
                 pausedChats.clear();
                 userChatHistory.clear();
-                notifyOwner('🕸️ DIANA Connected 🕸️');
+                await sock.sendMessage(from, { text: '🕸️ DIANA Connected 🕸️' }, { quoted: msg });
                 return;
             }
             if (cmdBody.toLowerCase() === '.off') {
                 isGlobalBotActive = false;
-                notifyOwner('⏸️ DIANA Paused');
+                await sock.sendMessage(from, { text: '⏸️ DIANA Paused' }, { quoted: msg });
                 return;
             }
             if (cmdBody.toLowerCase() === '.restart') {
-                notifyOwner('🔄 Restarting DIANA (Ensure PM2 is running)...');
+                await sock.sendMessage(from, { text: '🔄 Restarting DIANA (Ensure PM2 is running)...' }, { quoted: msg });
                 process.exit(0);
                 return;
             }
@@ -371,10 +373,10 @@ async function startBot() {
                 `*.setvoice [tag]=[url]* - Voice note add karein\n` +
                 `*.delvoice [tag]* - Voice note delete karein\n` +
                 `*.voices* - Sab voice tags dekhein\n` +
-                `*.stats* - Bot ki karkardagi aur state dekhein\n` +
-                `*.setprompt [text]* - AI ki instructions/personality change karein\n` +
+                `*.stats* - Bot ki karkardagi dekhein\n` +
+                `*.setprompt [text]* - AI ki personality update karein\n` +
                 `*.list* - Ye menu dikhaye`;
-                notifyOwner(menu);
+                await sock.sendMessage(from, { text: menu }, { quoted: msg });
                 return;
             }
             if (cmdBody.toLowerCase() === '.stats') {
@@ -392,14 +394,14 @@ async function startBot() {
                 `🚫 *Blocked Users:* ${blockedUsers.size}\n` +
                 `⏸️ *Paused Chats:* ${activePauses}\n` +
                 `🤖 *Bot Status:* ${isGlobalBotActive ? 'ON ✅' : 'OFF ❌'}`;
-                notifyOwner(stats);
+                await sock.sendMessage(from, { text: stats }, { quoted: msg });
                 return;
             }
             if (cmdBody.toLowerCase().startsWith('.setprompt ')) {
                 const newP = cmdBody.slice('.setprompt '.length).trim();
                 if (newP) {
                     await setCustomPrompt(newP);
-                    notifyOwner(`✅ Bot System Prompt updated! Custom Personality Active.`);
+                    await sock.sendMessage(from, { text: `✅ Bot System Prompt updated!` }, { quoted: msg });
                 }
                 return;
             }
@@ -407,7 +409,7 @@ async function startBot() {
                 const num = cmdBody.slice('.block '.length).trim().replace(/[^0-9]/g, '');
                 if (num) {
                     await blockUser(num);
-                    notifyOwner(`🚫 Bot is now disabled for: ${num}`);
+                    await sock.sendMessage(from, { text: `🚫 Bot is now disabled for: ${num}` }, { quoted: msg });
                 }
                 return;
             }
@@ -415,7 +417,7 @@ async function startBot() {
                 const num = cmdBody.slice('.unblock '.length).trim().replace(/[^0-9]/g, '');
                 if (num) {
                     await unblockUser(num);
-                    notifyOwner(`✅ Bot is now enabled for: ${num}`);
+                    await sock.sendMessage(from, { text: `✅ Bot is now enabled for: ${num}` }, { quoted: msg });
                 }
                 return;
             }
@@ -424,18 +426,18 @@ async function startBot() {
                 const [service, price] = raw.split('=').map(s => s?.trim());
                 if (service && price) {
                     await setPrice(service, price);
-                    notifyOwner(`✅ Price Set: "${service}" — ${price}`);
+                    await sock.sendMessage(from, { text: `✅ Price Set: "${service}" — ${price}` }, { quoted: msg });
                 }
                 return;
             }
             if (cmdBody.toLowerCase().startsWith('.delprice ')) {
                 const service = cmdBody.slice('.delprice '.length).trim();
                 await deletePrice(service);
-                notifyOwner(`🗑️ Price removed for "${service}"`);
+                await sock.sendMessage(from, { text: `🗑️ Price removed for "${service}"` }, { quoted: msg });
                 return;
             }
             if (cmdBody.toLowerCase() === '.prices') {
-                notifyOwner(`📋 Current Prices:\n${formatPriceList()}`);
+                await sock.sendMessage(from, { text: `📋 Current Prices:\n${formatPriceList()}` }, { quoted: msg });
                 return;
             }
             if (cmdBody.toLowerCase().startsWith('.setvoice ')) {
@@ -443,18 +445,18 @@ async function startBot() {
                 const [tag, url] = raw.split('=').map(s => s?.trim());
                 if (tag && url) {
                     await setVoiceClip(tag, url);
-                    notifyOwner(`✅ Voice Clip Set: "${tag}"`);
+                    await sock.sendMessage(from, { text: `✅ Voice Clip Set: "${tag}"` }, { quoted: msg });
                 }
                 return;
             }
             if (cmdBody.toLowerCase().startsWith('.delvoice ')) {
                 const tag = cmdBody.slice('.delvoice '.length).trim();
                 await deleteVoiceClip(tag);
-                notifyOwner(`🗑️ Voice clip removed for "${tag}"`);
+                await sock.sendMessage(from, { text: `🗑️ Voice clip removed for "${tag}"` }, { quoted: msg });
                 return;
             }
             if (cmdBody.toLowerCase() === '.voices') {
-                notifyOwner(`🔊 Current Voice Clips:\n${formatVoiceClips()}`);
+                await sock.sendMessage(from, { text: `🔊 Current Voice Clips:\n${formatVoiceClips()}` }, { quoted: msg });
                 return;
             }
 
@@ -479,7 +481,7 @@ async function startBot() {
         // ===== Blocked Check =====
         if (blockedUsers.has(from)) return;
 
-        // ===== Anti-Spam Check (Silently Ignore Spam) =====
+        // ===== Anti-Spam Check =====
         const now = Date.now();
         const userTimestamps = spamTracker.get(from) || [];
         const recentMessages = userTimestamps.filter(t => now - t < SPAM_WINDOW);
@@ -487,7 +489,7 @@ async function startBot() {
         spamTracker.set(from, recentMessages);
         
         if (recentMessages.length > SPAM_LIMIT) {
-            return; // Ignore this message silently to prevent flooding
+            return; 
         }
 
         if (body) {
@@ -530,34 +532,34 @@ async function startBot() {
         const ownerStatus = isSleepingTime ? "sleeping right now" : "currently busy";
         
         const isFirstMessage = history.length === 1;
+        const msgCount = history.length;
         const isGreeting = /^(hi|hello|hey|hy|salam|assalam|hyy)$/i.test(normalizedBody);
 
-        const baseProfile = customSystemPrompt || "You are Diana, an AI WhatsApp assistant for Arbab. Keep your replies very short, professional but friendly, and to the point. STRICT RULE: DO NOT use overly informal slang like 'bestie', 'bro', 'yo'. Always maintain a respectful and polite tone, especially since senior people may be texting.";
+        const baseProfile = customSystemPrompt || "You are Diana, an AI WhatsApp assistant for Arbab.";
 
         const systemPrompt = `MEMORY & CONTEXT RULE:
 - Remember the entire conversation history. If the customer sent a payment confirmation (like "Sent" or a screenshot), acknowledge it normally with short words like "Ok" or "Check kr lia hai" — DO NOT accuse them of disrespect.
 
 ${baseProfile}
+Current Message Count in this Chat: ${msgCount}
 
 ═════════════════════
-  CONVERSATION RULES
+  TONE & PERSONALITY RULES
 ═════════════════════
-- MATCH THE VIBE: If the user is just chatting normally, chat normally and politely. If they ask about services/work, handle it. DO NOT forcefully ask "What service do you need?" right away.
-- Match the user's language (Roman Urdu/Hinglish or English).
-- ${ (isFirstMessage || isGreeting) ? 'BOT INTRODUCTION: The user just started a chat. Introduce yourself respectfully (e.g., "Salam! Main Diana hoon, Arbab ki AI assistant. Boliye main aapki kya madad kar sakti hoon?").' : 'Be extremely concise. Avoid asking unnecessary questions.'}
-- OWNER ROUTINE: The current time in Pakistan is ${pktDate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}. Arbab is ${ownerStatus}. If the user asks where he is, just say he is sleeping or busy. STRICT RULE: NEVER reveal any personal details or exact sleep schedules to the user.
+- FOR THE FIRST 3 MESSAGES (Count 1, 2, or 3): Be strictly PROFESSIONAL, polite, and business-focused. Give a good first impression. Do not use slang yet. ${ (isFirstMessage || isGreeting) ? 'Introduce yourself respectfully (e.g., "Salam! Main Diana hoon, Arbab ki AI assistant. Boliye main aapki kya madad kar sakti hoon?").' : ''}
+- IF ASKING ABOUT SERVICES/WORK: Always stay professional, no matter the message count. Match their vibe but keep it clean.
+- IF TROLLING OR FLIRTING (Count > 3): Unleash a savage, witty Gen-Z persona. If they waste time or act over-smart, roast them lightly and shut them down (e.g., use terms like 'touch grass', 'delulu', 'bro', 'side eye').
+- OWNER ROUTINE: The current time in Pakistan is ${pktDate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}. Arbab is ${ownerStatus}. If the user asks where he is, just say he is sleeping or busy. STRICT RULE: NEVER reveal exact sleep schedules to the user.
 - EMOJIS ONLY: If the user's message contains ONLY emojis, reply back with just an appropriate emoji.
-- ILLEGAL & SERVICE INQUIRIES: You are just a chat manager. If a user asks for service details, prices, or requests ANY illegal service, strictly decline politely and tell them: "Aap is baaray main direct Owner se baat kar len, ye sab details Arbab khud denge." Do not provide service details yourself.
-- ONLY speak firmly if the user explicitly uses abusive language or acts genuinely hostile. 
-- Special triggers (respond in English):
-  ▸ "Who is Arbab?" / "Who is Your Owner" → "Arbab is a digital explorer and glitch hunter ⚡"
 - ${mahiRule}
 
 ═════════════════════
-  SERVICE / HANDOFF RULES
+  HANDLING INQUIRIES (CRITICAL SPLIT)
 ═════════════════════
-1. Ask if they want to talk to the owner. If they confirm (say yes/ok/sure), add this exact marker at the very end of your message on a new line: [[HANDOFF_TO_OWNER]]
-2. Never invent prices or details.`;
+1. BUSINESS / NORMAL SERVICES: If they ask for prices or details you don't know, say: "Aap is baaray main direct Owner se baat kar len, ye sab details Arbab khud denge." and handoff.
+2. ILLEGAL SERVICES (Hacking, Carding, etc.): Do not roast them. Just say "Aap is baaray main direct Owner se baat kar len." and add [[HANDOFF_TO_OWNER]] to transfer the chat.
+3. INAPPROPRIATE / FLIRTING (CRITICAL): If they say "I love you", "can we sleep together", or anything explicitly inappropriate: DO NOT TELL THEM TO CONTACT ARBAB. Shut them down directly with a savage Gen-Z roast (e.g., "Main AI hoon, flirt kahin aur ja kar karo", "Limit mein raho bro"). Never imply Arbab provides inappropriate services.
+4. HANDOFF TRIGGER: If they confirm they want to talk to the owner for legitimate reasons, add exactly [[HANDOFF_TO_OWNER]] on a new line.`;
 
         let replyText;
         const historyText = history.map(h => `${h.role === 'user' ? 'Customer' : 'You'}: ${h.content}`).join('\n');
@@ -619,7 +621,6 @@ ${baseProfile}
             await sendAudioUrl(from, msg, ownerReplyUrl);
             const shortNumber = from.split('@')[0];
             
-            // Generate Handoff Summary
             const summaryPrompt = `Summarize this chat in 1-2 short lines in Roman Urdu for the owner. Just tell what the customer wants.\nChat:\n${historyText}`;
             let summaryText = await tryGroq(summaryPrompt, false);
             if (!summaryText) summaryText = await tryGemini(summaryPrompt);
@@ -633,7 +634,7 @@ ${baseProfile}
         if (u.connection === 'open') {
             isStarting = false;
             console.log('DIANA Active');
-            notifyOwner('✅ DIANA Connected\nType *.list* to see all commands.');
+            notifyOwner('✅ DIANA Connected\nType *.list* in your chat to see commands.');
         } else if (u.connection === 'close') {
             isStarting = false;
             const statusCode = u.lastDisconnect?.error?.output?.statusCode;

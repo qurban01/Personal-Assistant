@@ -556,8 +556,8 @@ async function startBot() {
 
         const baseProfile = customSystemPrompt || "You are Diana, an advanced AI entity engineered by Arbab.";
 
-        const systemPrompt = `DEEP REASONING & COMPREHENSION RULE:
-- BEFORE replying, carefully analyze and deeply think about the customer's exact message, intent, and context. Do not misinterpret normal casual text or random words as commands, orders, or service requests. Read every single sentence thoroughly.
+        const systemPrompt = `MEMORY & CONTEXT RULE:
+- Remember the entire conversation history. If the customer sent a payment confirmation (like "Sent" or a screenshot), acknowledge it normally with short words like "Ok" or "Check kr lia hai" — DO NOT accuse them of disrespect.
 
 ${baseProfile}
 Current Message Count in this Chat: ${msgCount}
@@ -588,7 +588,7 @@ Current Message Count in this Chat: ${msgCount}
         const tryGroq = async (promptMsg, useHistory = true) => tryWithRotation(groqClients, async (client) => {
             const msgs = useHistory ? [{ role: "system", content: promptMsg }, ...history] : [{ role: "user", content: promptMsg }];
             const completion = await client.chat.completions.create({
-                model: "deepseek-r1-distill-llama-70b",
+                model: "openai/gpt-oss-120b",
                 temperature: 0.3,
                 messages: msgs
             });

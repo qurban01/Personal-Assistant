@@ -511,8 +511,7 @@ async function startBot() {
 ┃    Removed               ┃
 ╰━━━━━━━━━━━━━━━━━━━━━━╯
 \`\`\``;
-                    await sock.sendMessage(from, { text: uiMsg }, { quoted: msg });
-                }
+                await sock.sendMessage(from, { text: uiMsg }, { quoted: msg });
                 return;
             }
             if (cmdBody.toLowerCase() === '.prices') {
@@ -569,7 +568,7 @@ async function startBot() {
                 pausedChats.set(chatId, Date.now() + pauseTime);
 
                 if (isOwnerHandoff) {
-                    const ownerReplyUrl = "[https://github.com/qurban01/Reacted-to/raw/refs/heads/main/New%20Owner_1788121338977.ogg](https://github.com/qurban01/Reacted-to/raw/refs/heads/main/New%20Owner_1788121338977.ogg)";
+                    const ownerReplyUrl = "https://github.com/qurban01/Reacted-to/raw/refs/heads/main/New%20Owner_1788121338977.ogg";
                     await sendAudioUrl(from, msg, ownerReplyUrl);
                     const handoffUI = 
 `\`\`\`
@@ -764,7 +763,7 @@ Current Message Count in this Chat: ${msgCount}
 
         if (isHandoff) {
             pausedChats.set(chatId, Date.now() + ONE_HOUR);
-            const ownerReplyUrl = "[https://github.com/qurban01/Reacted-to/raw/refs/heads/main/New%20Owner.mp3](https://github.com/qurban01/Reacted-to/raw/refs/heads/main/New%20Owner.mp3)";
+            const ownerReplyUrl = "https://github.com/qurban01/Reacted-to/raw/refs/heads/main/New%20Owner.mp3";
             await sendAudioUrl(from, msg, ownerReplyUrl);
             const shortNumber = from.split('@')[0];
             

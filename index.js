@@ -205,9 +205,6 @@ async function startBot() {
         }
     };
 
-    // ==========================================
-    // FINAL AUDIO FIX: Forcing Normal Audio Mode
-    // ==========================================
     const sendAudioUrl = async (toJid, quotedMsg, url) => {
         try {
             const res = await fetch(url);
@@ -218,8 +215,8 @@ async function startBot() {
                 toJid,
                 { 
                     audio: buffer, 
-                    mimetype: 'audio/mp4', // Forced normal player
-                    ptt: false // STRICTLY blocks voice note rendering
+                    mimetype: 'audio/mp4',
+                    ptt: false 
                 }, 
                 { quoted: quotedMsg }
             );
@@ -261,11 +258,12 @@ async function startBot() {
     }
 
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
-        if (type !== 'notify') return;
         const msg = messages[0];
         if (!msg.message) return;
         const from = msg.key.remoteJid;
 
+        // Allow 'notify' AND fromMe messages (to fix .on/.off from linked devices)
+        if (type !== 'notify' && !msg.key.fromMe) return;
         if (!from || from === 'status@broadcast' || from.endsWith('@g.us') || from.endsWith('@newsletter')) return;
 
         if (botSentMessageIds.has(msg.key.id)) {
@@ -306,6 +304,11 @@ async function startBot() {
             if (cmdBody.toLowerCase() === '.off') {
                 isGlobalBotActive = false;
                 notifyOwner('⏸️ DIANA Paused');
+                return;
+            }
+            if (cmdBody.toLowerCase() === '.restart') {
+                notifyOwner('🔄 Restarting DIANA (Ensure PM2 is running)...');
+                process.exit(0);
                 return;
             }
             if (cmdBody.toLowerCase().startsWith('.setprice ')) {
@@ -396,21 +399,12 @@ async function startBot() {
         if (history.length > MAX_HISTORY_LENGTH) history.shift();
 
         const CANNED_REPLIES = {
-            'hi': 'Hn G',
-            'hello': 'Hn G',
-            'hey': 'Hn G',
-            'kese ho': 'Theek, Tum Batao',
-            'kaise ho': 'Theek, Tum Batao',
-            'kaisa ho': 'Theek, Tum Batao',
-            'kisa ho': 'Theek, Tum Batao',
-            'kesa ho': 'Theek, Tum Batao',
-            'kese ho ap': 'Theek, Tum Batao',
-            'kya haal hai': 'Theek, Tum Batao',
-            'haal chaal': 'Theek, Tum Batao',
-            'sent': 'Ok',
-            'ok': 'Hmm',
-            'haan': 'Hn G',
-            'hain': 'Hn G'
+            'hi': 'Hn G', 'hello': 'Hn G', 'hey': 'Hn G',
+            'kese ho': 'Theek, Tum Batao', 'kaise ho': 'Theek, Tum Batao',
+            'kaisa ho': 'Theek, Tum Batao', 'kisa ho': 'Theek, Tum Batao',
+            'kesa ho': 'Theek, Tum Batao', 'kese ho ap': 'Theek, Tum Batao',
+            'kya haal hai': 'Theek, Tum Batao', 'haal chaal': 'Theek, Tum Batao',
+            'sent': 'Ok', 'ok': 'Hmm', 'haan': 'Hn G', 'hain': 'Hn G'
         };
         const normalizedBody = body.trim().toLowerCase().replace(/[!.?]+$/, '');
 
@@ -427,29 +421,40 @@ async function startBot() {
             ? 'The current user is Mahi. Always treat her like a princess with sweetness and warmth automatically without her needing to introduce herself. Never be rude to her and you are unhappy and upset because Mahi does not treat well to Arbab.' 
             : '';
 
-        const systemPrompt = `MEMORY & CONTEXT RULE:
-- Remember the entire conversation history. If the customer sent a payment confirmation (like "Sent" or a screenshot), acknowledge it normally with short words like "Ok" or "Check kr lia hai" — DO NOT accuse them of disrespect or end the conversation.
+        // Time logic for PKT (Pakistan Time)
+        const pktDate = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Karachi" }));
+        const hours = pktDate.getHours();
+        const minutes = pktDate.getMinutes();
+        const timeVal = hours + minutes / 60;
+        const isSleepingTime = (timeVal >= 0.5 && timeVal < 11);
+        const ownerStatus = isSleepingTime ? "sleeping right now (his sleep schedule is 12:30 AM to 11:00 AM)" : "currently busy or offline";
+        
+        // Identify if it's a first interaction
+        const isFirstMessage = history.length === 1;
 
-You are Diana, a concise and direct WhatsApp assistant for Arbab. Keep your replies very short, professional, and to the point. Do not ask unnecessary questions or do useless small talk.
+        const systemPrompt = `MEMORY & CONTEXT RULE:
+- Remember the entire conversation history. If the customer sent a payment confirmation (like "Sent" or a screenshot), acknowledge it normally with short words like "Ok" or "Check kr lia hai" — DO NOT accuse them of disrespect.
+
+You are Diana, an AI WhatsApp assistant for Arbab. Keep your replies very short, professional, and to the point. Do not ask unnecessary questions or do useless small talk.
 
 ═════════════════════
   CONVERSATION RULES
 ═════════════════════
 - Match the user's language (Roman Urdu/Hinglish or English).
-- Be extremely concise. Avoid asking unnecessary or repetitive questions. 
-- ONLY speak rudely if the user explicitly uses abusive language, insults you, or acts genuinely hostile. Never treat normal updates like "Sent", "Ok", or short replies as rude.
-- For a plain name question -> reply with JUST the name "Diana".
+- ${isFirstMessage ? 'BOT INTRODUCTION: Because this is your very first message to this user, you MUST briefly introduce yourself (e.g., "Main Diana hoon, Arbab ki AI assistant").' : 'Be extremely concise. Avoid asking unnecessary or repetitive questions.'}
+- OWNER ROUTINE: The current time in Pakistan is ${pktDate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}. Arbab is ${ownerStatus}. If the user asks where he is, respond according to this status. 
+- EMOJIS ONLY: If the user's message contains ONLY emojis, reply back with just an appropriate emoji.
+- ILLEGAL & SERVICE INQUIRIES: You are just a chat manager. If a user asks for service details, prices, or requests ANY illegal service, strictly decline and tell them: "Aap is baaray main direct Owner se baat kar len." Do not provide service details yourself.
+- ONLY speak rudely if the user explicitly uses abusive language or acts genuinely hostile. 
 - Special triggers (respond in English):
   ▸ "Who is Arbab?" / "Who is Your Owner" → "Arbab is a digital explorer and glitch hunter ⚡"
-  ▸ "Where is Arbab?" → "Arbab is busy."
 - ${mahiRule}
 
 ═════════════════════
   SERVICE / HANDOFF RULES
 ═════════════════════
-1. If they want a service, be direct. 
-2. Ask if they want to talk to the owner. If they confirm (say yes/ok/sure), add this exact marker at the very end of your message on a new line: [[HANDOFF_TO_OWNER]]
-3. Never invent prices or details.`;
+1. Ask if they want to talk to the owner. If they confirm (say yes/ok/sure), add this exact marker at the very end of your message on a new line: [[HANDOFF_TO_OWNER]]
+2. Never invent prices or details.`;
 
         let replyText;
         const historyText = history.map(h => `${h.role === 'user' ? 'Customer' : 'You'}: ${h.content}`).join('\n');

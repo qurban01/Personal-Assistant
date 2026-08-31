@@ -40,6 +40,7 @@ async function tryWithRotation(clients, fn, label) {
 let isGlobalBotActive = true;
 const pausedChats = new Map();
 const userChatHistory = new Map();
+const spamTracker = new Map(); // Anti-Spam Tracker
 const PAUSE_DURATION = 10 * 60 * 1000;
 const ONE_HOUR = 60 * 60 * 1000;
 const MAX_HISTORY_LENGTH = 20;
@@ -48,6 +49,10 @@ const botSentMessageIds = new Set();
 const processedIncomingIds = new Set();
 const MAX_PROCESSED_IDS = 500;
 let pairingRequested = false;
+
+// ===== Anti-Spam Settings =====
+const SPAM_LIMIT = 5; // Max messages
+const SPAM_WINDOW = 10000; // In 10 seconds
 
 // ===== Blocked Users (MongoDB) =====
 const blockedUsers = new Set();
@@ -74,6 +79,25 @@ async function unblockUser(number) {
     const jid = `${number}@s.whatsapp.net`;
     blockedUsers.delete(jid);
     await BlockedEntry.findByIdAndDelete(jid);
+}
+
+// ===== Bot Custom Prompt (MongoDB) =====
+let customSystemPrompt = "";
+const PromptSchema = new mongoose.Schema({ _id: String, prompt: String }, { collection: 'bot_prompt' });
+const PromptEntry = mongoose.models.PromptEntry || mongoose.model('PromptEntry', PromptSchema);
+
+async function loadCustomPrompt() {
+    try {
+        const doc = await PromptEntry.findById('main_prompt').lean();
+        if (doc && doc.prompt) customSystemPrompt = doc.prompt;
+    } catch (err) {
+        console.log('Could not load prompt:', err.message);
+    }
+}
+
+async function setCustomPrompt(newPrompt) {
+    customSystemPrompt = newPrompt.trim();
+    await PromptEntry.findByIdAndUpdate('main_prompt', { prompt: customSystemPrompt }, { upsert: true });
 }
 
 // ===== Price List (MongoDB) =====
@@ -213,6 +237,7 @@ async function startBot() {
     await loadPriceList();
     await loadVoiceClips();
     await loadBlockedUsers();
+    await loadCustomPrompt();
 
     const { state, saveCreds } = await useMongoAuthState('daina-session');
     const { version } = await fetchLatestBaileysVersion();
@@ -240,11 +265,7 @@ async function startBot() {
             
             const sent = await sock.sendMessage(
                 toJid,
-                { 
-                    audio: buffer, 
-                    mimetype: 'audio/mp4',
-                    ptt: false 
-                }, 
+                { audio: buffer, mimetype: 'audio/mp4', ptt: false }, 
                 { quoted: quotedMsg }
             );
             
@@ -337,7 +358,51 @@ async function startBot() {
                 process.exit(0);
                 return;
             }
-            // Block & Unblock Commands
+            if (cmdBody.toLowerCase() === '.list') {
+                const menu = `🛠️ *Bot Commands List*\n\n` +
+                `*.on* - Bot ko active karein\n` +
+                `*.off* - Bot ko pause karein\n` +
+                `*.restart* - Bot system ko restart karein\n` +
+                `*.block [number]* - Kisi user ko bot se ignore karwayein (e.g. .block 92300...)\n` +
+                `*.unblock [number]* - User ko wapas allow karein\n` +
+                `*.setprice [service]=[price]* - Service ki price set karein\n` +
+                `*.delprice [service]* - Service ki price delete karein\n` +
+                `*.prices* - Sab prices dekhein\n` +
+                `*.setvoice [tag]=[url]* - Voice note add karein\n` +
+                `*.delvoice [tag]* - Voice note delete karein\n` +
+                `*.voices* - Sab voice tags dekhein\n` +
+                `*.stats* - Bot ki karkardagi aur state dekhein\n` +
+                `*.setprompt [text]* - AI ki instructions/personality change karein\n` +
+                `*.list* - Ye menu dikhaye`;
+                notifyOwner(menu);
+                return;
+            }
+            if (cmdBody.toLowerCase() === '.stats') {
+                const formatUptime = (seconds) => {
+                    const h = Math.floor(seconds / 3600);
+                    const m = Math.floor((seconds % 3600) / 60);
+                    const s = Math.floor(seconds % 60);
+                    return `${h}h ${m}m ${s}s`;
+                };
+                let activePauses = 0;
+                const now = Date.now();
+                pausedChats.forEach(expiry => { if (expiry > now) activePauses++; });
+                const stats = `📊 *DIANA Stats*\n\n` +
+                `⏱️ *Uptime:* ${formatUptime(process.uptime())}\n` +
+                `🚫 *Blocked Users:* ${blockedUsers.size}\n` +
+                `⏸️ *Paused Chats:* ${activePauses}\n` +
+                `🤖 *Bot Status:* ${isGlobalBotActive ? 'ON ✅' : 'OFF ❌'}`;
+                notifyOwner(stats);
+                return;
+            }
+            if (cmdBody.toLowerCase().startsWith('.setprompt ')) {
+                const newP = cmdBody.slice('.setprompt '.length).trim();
+                if (newP) {
+                    await setCustomPrompt(newP);
+                    notifyOwner(`✅ Bot System Prompt updated! Custom Personality Active.`);
+                }
+                return;
+            }
             if (cmdBody.toLowerCase().startsWith('.block ')) {
                 const num = cmdBody.slice('.block '.length).trim().replace(/[^0-9]/g, '');
                 if (num) {
@@ -394,7 +459,6 @@ async function startBot() {
             }
 
             if (isGlobalBotActive && body && !cmdBody.startsWith('.')) {
-                // If it's your own regular message, don't auto-pause unless it looks like a manual handoff
                 const history = userChatHistory.get(chatId) || [];
                 const isOwnerHandoff = history.some(h => 
                     h.role === 'user' && /owner|human|admin|real person|manager|contact|baat/i.test(h.content)
@@ -407,14 +471,24 @@ async function startBot() {
                     const ownerReplyUrl = "https://github.com/qurban01/Reacted-to/raw/refs/heads/main/New%20Owner_1788121338977.ogg";
                     await sendAudioUrl(from, msg, ownerReplyUrl);
                 }
-
                 notifyOwner(`⏸️ DIANA Paused for ${isOwnerHandoff ? '1 Hour (Owner Handoff)' : '10 Minutes'} (manual reply detected)`);
             }
             return;
         }
 
-        // If user is in blocked list, bot will completely ignore them
+        // ===== Blocked Check =====
         if (blockedUsers.has(from)) return;
+
+        // ===== Anti-Spam Check (Silently Ignore Spam) =====
+        const now = Date.now();
+        const userTimestamps = spamTracker.get(from) || [];
+        const recentMessages = userTimestamps.filter(t => now - t < SPAM_WINDOW);
+        recentMessages.push(now);
+        spamTracker.set(from, recentMessages);
+        
+        if (recentMessages.length > SPAM_LIMIT) {
+            return; // Ignore this message silently to prevent flooding
+        }
 
         if (body) {
             const lowerBody = body.toLowerCase().trim();
@@ -436,9 +510,7 @@ async function startBot() {
 
         if (!isGlobalBotActive || (pausedChats.has(chatId) && Date.now() < pausedChats.get(chatId))) return;
 
-        if (!body || !body.trim()) {
-            return;
-        }
+        if (!body || !body.trim()) return;
 
         if (!userChatHistory.has(chatId)) userChatHistory.set(chatId, []);
         const history = userChatHistory.get(chatId);
@@ -446,27 +518,26 @@ async function startBot() {
         if (history.length > MAX_HISTORY_LENGTH) history.shift();
 
         const normalizedBody = body.trim().toLowerCase().replace(/[!.?]+$/, '');
-
         const mahiRule = messageMatchesNumber(msg, from, '923147850614')
             ? 'The current user is Mahi. Always treat her like a princess with sweetness and warmth automatically without her needing to introduce herself. Never be rude to her and you are unhappy and upset because Mahi does not treat well to Arbab.' 
             : '';
 
-        // Time logic for PKT (Pakistan Time)
         const pktDate = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Karachi" }));
         const hours = pktDate.getHours();
         const minutes = pktDate.getMinutes();
         const timeVal = hours + minutes / 60;
         const isSleepingTime = (timeVal >= 0.5 && timeVal < 11);
-        
         const ownerStatus = isSleepingTime ? "sleeping right now" : "currently busy";
         
         const isFirstMessage = history.length === 1;
         const isGreeting = /^(hi|hello|hey|hy|salam|assalam|hyy)$/i.test(normalizedBody);
 
+        const baseProfile = customSystemPrompt || "You are Diana, an AI WhatsApp assistant for Arbab. Keep your replies very short, professional but friendly, and to the point. STRICT RULE: DO NOT use overly informal slang like 'bestie', 'bro', 'yo'. Always maintain a respectful and polite tone, especially since senior people may be texting.";
+
         const systemPrompt = `MEMORY & CONTEXT RULE:
 - Remember the entire conversation history. If the customer sent a payment confirmation (like "Sent" or a screenshot), acknowledge it normally with short words like "Ok" or "Check kr lia hai" — DO NOT accuse them of disrespect.
 
-You are Diana, an AI WhatsApp assistant for Arbab. Keep your replies very short, professional but friendly, and to the point. STRICT RULE: DO NOT use overly informal slang like "bestie", "bro", "yo". Always maintain a respectful and polite tone, especially since senior people may be texting.
+${baseProfile}
 
 ═════════════════════
   CONVERSATION RULES
@@ -492,26 +563,27 @@ You are Diana, an AI WhatsApp assistant for Arbab. Keep your replies very short,
         const historyText = history.map(h => `${h.role === 'user' ? 'Customer' : 'You'}: ${h.content}`).join('\n');
         const geminiPrompt = `${systemPrompt}\n\nConversation so far:\n${historyText}`;
 
-        const tryGroq = () => tryWithRotation(groqClients, async (client) => {
+        const tryGroq = async (promptMsg, useHistory = true) => tryWithRotation(groqClients, async (client) => {
+            const msgs = useHistory ? [{ role: "system", content: promptMsg }, ...history] : [{ role: "user", content: promptMsg }];
             const completion = await client.chat.completions.create({
                 model: "openai/gpt-oss-120b",
                 temperature: 0.3,
-                messages: [{ role: "system", content: systemPrompt }, ...history]
+                messages: msgs
             });
             return completion.choices[0].message.content;
         }, 'Groq');
 
-        const tryGemini = () => tryWithRotation(geminiClients, async (client) => {
+        const tryGemini = async (promptMsg) => tryWithRotation(geminiClients, async (client) => {
             const result = await client.models.generateContent({
                 model: "gemini-3.7-flash",
-                contents: geminiPrompt
+                contents: promptMsg
             });
             return result.text;
         }, 'Gemini');
 
         for (let round = 1; round <= 1 && !replyText; round++) {
-            replyText = await tryGroq();
-            if (!replyText) replyText = await tryGemini();
+            replyText = await tryGroq(systemPrompt, true);
+            if (!replyText) replyText = await tryGemini(geminiPrompt);
         }
 
         if (!replyText) {
@@ -527,14 +599,11 @@ You are Diana, an AI WhatsApp assistant for Arbab. Keep your replies very short,
         }
 
         history.push({ role: "assistant", content: replyText });
+        
         try {
             const isOrderConfirmation = /order\s*confirmed/i.test(replyText);
             if (isOrderConfirmation && orderConfirmedImage) {
-                const sent = await sock.sendMessage(
-                    from,
-                    { image: orderConfirmedImage, caption: replyText },
-                    { quoted: msg }
-                );
+                const sent = await sock.sendMessage(from, { image: orderConfirmedImage, caption: replyText }, { quoted: msg });
                 if (sent?.key?.id) botSentMessageIds.add(sent.key.id);
             } else {
                 const sent = await sock.sendMessage(from, { text: replyText }, { quoted: msg });
@@ -549,7 +618,14 @@ You are Diana, an AI WhatsApp assistant for Arbab. Keep your replies very short,
             const ownerReplyUrl = "https://github.com/qurban01/Reacted-to/raw/refs/heads/main/New%20Owner.mp3";
             await sendAudioUrl(from, msg, ownerReplyUrl);
             const shortNumber = from.split('@')[0];
-            notifyOwner(`👤 Customer (${shortNumber}) confirmed they want to talk to you directly. Bot paused for 1 hour.`);
+            
+            // Generate Handoff Summary
+            const summaryPrompt = `Summarize this chat in 1-2 short lines in Roman Urdu for the owner. Just tell what the customer wants.\nChat:\n${historyText}`;
+            let summaryText = await tryGroq(summaryPrompt, false);
+            if (!summaryText) summaryText = await tryGemini(summaryPrompt);
+            if (!summaryText) summaryText = "Customer wants to talk to you.";
+
+            notifyOwner(`👤 Customer (${shortNumber}) wants to talk to you directly. Bot paused for 1 hour.\n\n📝 *Chat Summary:*\n${summaryText}`);
         }
     }
 
@@ -557,7 +633,7 @@ You are Diana, an AI WhatsApp assistant for Arbab. Keep your replies very short,
         if (u.connection === 'open') {
             isStarting = false;
             console.log('DIANA Active');
-            notifyOwner('✅ DIANA Connected');
+            notifyOwner('✅ DIANA Connected\nType *.list* to see all commands.');
         } else if (u.connection === 'close') {
             isStarting = false;
             const statusCode = u.lastDisconnect?.error?.output?.statusCode;

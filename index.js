@@ -156,7 +156,7 @@ async function setVoiceClip(tag, url) {
 async function deleteVoiceClip(tag) {
     const key = tag.trim().toLowerCase();
     voiceClips.delete(key);
-    await VoiceEntry.findByIdAndDelete(key);
+    await VoiceEntry.findByIdAndDelete(tag);
 }
 
 function formatVoiceClips() {
@@ -346,61 +346,39 @@ async function startBot() {
                 isGlobalBotActive = true;
                 pausedChats.clear();
                 userChatHistory.clear();
-                const uiMsg = 
-`\`\`\`
-╭━━〔 🕸️ DIANA CONTROL 〕━━╮
-┃                          ┃
-┃ 🟢 .on                   ┃
-┃ DIANA Connected          ┃
-╰━━━━━━━━━━━━━━━━━━━━━╯
-\`\`\``;
+                const uiMsg = "```[ 🟢 DIANA CONNECTED ]```";
                 await sock.sendMessage(from, { text: uiMsg }, { quoted: msg });
                 return;
             }
             if (cmdBody.toLowerCase() === '.off') {
                 isGlobalBotActive = false;
-                const uiMsg = 
-`\`\`\`
-╭━━〔 🕸️ DIANA CONTROL 〕━━╮
-┃                          ┃
-┃ 🔴 .off                  ┃
-┃ DIANA Paused             ┃
-╰━━━━━━━━━━━━━━━━━━━━━╯
-\`\`\``;
+                const uiMsg = "```[ 🔴 DIANA PAUSED ]```";
                 await sock.sendMessage(from, { text: uiMsg }, { quoted: msg });
                 return;
             }
             if (cmdBody.toLowerCase() === '.restart') {
-                const uiMsg = 
-`\`\`\`
-╭━━〔 🕸️ DIANA CONTROL 〕━━╮
-┃                          ┃
-┃ 🔄 .restart              ┃
-┃ Restarting DIANA...      ┃
-╰━━━━━━━━━━━━━━━━━━━━━╯
-\`\`\``;
+                const uiMsg = "```[ 🔄 RESTARTING... ]```";
                 await sock.sendMessage(from, { text: uiMsg }, { quoted: msg });
                 process.exit(0);
                 return;
             }
             if (cmdBody.toLowerCase() === '.list') {
                 const menu = `\`\`\`
-🛠️ *Bot Commands List*
-
-*.on* - Bot ko active karein
-*.off* - Bot ko pause karein
-*.restart* - Bot system ko restart karein
-*.block [num]* - User ko ignore karein
-*.unblock [num]* - User ko allow karein
-*.setprice [serv]=[pr]* - Price set karein
-*.delprice [serv]* - Price delete karein
-*.prices* - Sab prices dekhein
-*.setvoice [tag]=[url]* - Voice add karein
-*.delvoice [tag]* - Voice delete karein
-*.voices* - Sab voices dekhein
-*.stats* - Bot stats dekhein
-*.setprompt [txt]* - AI prompt update
-*.list* - Ye menu dekhein
+📋 DIANA COMMANDS
+• .on - Start Bot
+• .off - Pause Bot
+• .restart - Restart App
+• .block [no] - Ignore User
+• .unblock [no] - Allow User
+• .setprice [s]=[p] - Set Price
+• .delprice [s] - Del Price
+• .prices - View Prices
+• .setvoice [t]=[u] - Set Voice
+• .delvoice [t] - Del Voice
+• .voices - View Voices
+• .stats - Bot Stats
+• .setprompt [txt] - Edit AI
+• .list - Show Menu
 \`\`\``;
                 await sock.sendMessage(from, { text: menu }, { quoted: msg });
                 return;
@@ -409,8 +387,7 @@ async function startBot() {
                 const formatUptime = (seconds) => {
                     const h = Math.floor(seconds / 3600);
                     const m = Math.floor((seconds % 3600) / 60);
-                    const s = Math.floor(seconds % 60);
-                    return `${h}h ${m}m ${s}s`;
+                    return `${h}h ${m}m`;
                 };
                 let activePauses = 0;
                 const now = Date.now();
@@ -418,15 +395,11 @@ async function startBot() {
                 
                 const statsUI = 
 `\`\`\`
-╭━━━━〔 📊 DIANA STATS 〕━━━━╮
-┃                          ┃
-┃ 🤖 Status : 🟢 ONLINE    ┃
-┃ ⏱️ Uptime : ${formatUptime(process.uptime()).padEnd(10, ' ')}     ┃
-┃ 🚫 Blocked : ${String(blockedUsers.size).padEnd(2, ' ')} Users     ┃
-┃ ⏸️ Paused Chats : ${String(activePauses).padEnd(2, ' ')}      ┃
-┃                          ┃
-┃ ⚡ System : Operational  ┃
-╰━━━━━━━━━━━━━━━━━━━━━━━━━╯
+📊 DIANA STATS
+• Status : ONLINE ✅
+• Uptime : ${formatUptime(process.uptime())}
+• Blocked : ${blockedUsers.size} Users
+• Paused : ${activePauses} Chats
 \`\`\``;
                 await sock.sendMessage(from, { text: statsUI }, { quoted: msg });
                 return;
@@ -435,15 +408,7 @@ async function startBot() {
                 const newP = cmdBody.slice('.setprompt '.length).trim();
                 if (newP) {
                     await setCustomPrompt(newP);
-                    const uiMsg = 
-`\`\`\`
-╭━━〔 🕸️ DIANA CONTROL 〕━━╮
-┃                          ┃
-┃ 🧠 .setprompt            ┃
-┃ System Prompt Updated    ┃
-╰━━━━━━━━━━━━━━━━━━━━━╯
-\`\`\``;
-                    await sock.sendMessage(from, { text: uiMsg }, { quoted: msg });
+                    await sock.sendMessage(from, { text: "```[ 🧠 PROMPT UPDATED ]```" }, { quoted: msg });
                 }
                 return;
             }
@@ -451,15 +416,7 @@ async function startBot() {
                 const num = cmdBody.slice('.block '.length).trim().replace(/[^0-9]/g, '');
                 if (num) {
                     await blockUser(num);
-                    const uiMsg = 
-`\`\`\`
-╭━━〔 🚫 USER CONTROL 〕━━╮
-┃                          ┃
-┃ 🚫 Bot Disabled For:     ┃
-┃ ${num.padEnd(24, ' ')} ┃
-╰━━━━━━━━━━━━━━━━━━━━━━╯
-\`\`\``;
-                    await sock.sendMessage(from, { text: uiMsg }, { quoted: msg });
+                    await sock.sendMessage(from, { text: `\`\`\`[ 🚫 BLOCKED: ${num} ]\`\`\`` }, { quoted: msg });
                 }
                 return;
             }
@@ -467,15 +424,7 @@ async function startBot() {
                 const num = cmdBody.slice('.unblock '.length).trim().replace(/[^0-9]/g, '');
                 if (num) {
                     await unblockUser(num);
-                    const uiMsg = 
-`\`\`\`
-╭━━〔 ✅ USER CONTROL 〕━━╮
-┃                          ┃
-┃ ✅ Bot Enabled For:      ┃
-┃ ${num.padEnd(24, ' ')} ┃
-╰━━━━━━━━━━━━━━━━━━━━━━╯
-\`\`\``;
-                    await sock.sendMessage(from, { text: uiMsg }, { quoted: msg });
+                    await sock.sendMessage(from, { text: `\`\`\`[ ✅ UNBLOCKED: ${num} ]\`\`\`` }, { quoted: msg });
                 }
                 return;
             }
@@ -484,34 +433,14 @@ async function startBot() {
                 const [service, price] = raw.split('=').map(s => s?.trim());
                 if (service && price) {
                     await setPrice(service, price);
-                    const uiMsg = 
-`\`\`\`
-╭━━〔 💰 PRICE UPDATED 〕━━╮
-┃                          ┃
-┃ ✅ Price Successfully Set┃
-┃                          ┃
-┃ 🏷️ Service: ${service.padEnd(11, ' ')}     ┃
-┃ 💵 Price: ${price.padEnd(13, ' ')}       ┃
-╰━━━━━━━━━━━━━━━━━━━━━━╯
-\`\`\``;
-                    await sock.sendMessage(from, { text: uiMsg }, { quoted: msg });
+                    await sock.sendMessage(from, { text: `\`\`\`[ 💰 PRICE SET ]\n• ${service} : ${price}\`\`\`` }, { quoted: msg });
                 }
                 return;
             }
             if (cmdBody.toLowerCase().startsWith('.delprice ')) {
                 const service = cmdBody.slice('.delprice '.length).trim();
                 await deletePrice(service);
-                const uiMsg = 
-`\`\`\`
-╭━━〔 🗑️ PRICE REMOVED 〕━━╮
-┃                          ┃
-┃ Service: ${service.padEnd(15, ' ')}  ┃
-┃                          ┃
-┃ ✅ Price Successfully    ┃
-┃    Removed               ┃
-╰━━━━━━━━━━━━━━━━━━━━━━╯
-\`\`\``;
-                await sock.sendMessage(from, { text: uiMsg }, { quoted: msg });
+                await sock.sendMessage(from, { text: `\`\`\`[ 🗑️ PRICE DELETED ]\n• ${service}\`\`\`` }, { quoted: msg });
                 return;
             }
             if (cmdBody.toLowerCase() === '.prices') {
@@ -523,34 +452,14 @@ async function startBot() {
                 const [tag, url] = raw.split('=').map(s => s?.trim());
                 if (tag && url) {
                     await setVoiceClip(tag, url);
-                    const uiMsg = 
-`\`\`\`
-╭━━〔 🎙️ VOICE ADDED 〕━━╮
-┃                          ┃
-┃ ✅ Voice Clip Added      ┃
-┃                          ┃
-┃ 🏷️ Tag: ${tag.padEnd(16, ' ')}     ┃
-┃ 🔊 Status: Active        ┃
-╰━━━━━━━━━━━━━━━━━━━━━╯
-\`\`\``;
-                    await sock.sendMessage(from, { text: uiMsg }, { quoted: msg });
+                    await sock.sendMessage(from, { text: `\`\`\`[ 🎙️ VOICE SET ]\n• Tag: ${tag}\`\`\`` }, { quoted: msg });
                 }
                 return;
             }
             if (cmdBody.toLowerCase().startsWith('.delvoice ')) {
                 const tag = cmdBody.slice('.delvoice '.length).trim();
                 await deleteVoiceClip(tag);
-                const uiMsg = 
-`\`\`\`
-╭━━〔 🗑️ VOICE REMOVED 〕━━╮
-┃                          ┃
-┃ 🏷️ Tag: ${tag.padEnd(16, ' ')}     ┃
-┃                          ┃
-┃ ✅ Voice Clip Successfully┃
-┃    Removed               ┃
-╰━━━━━━━━━━━━━━━━━━━━━━━━╯
-\`\`\``;
-                await sock.sendMessage(from, { text: uiMsg }, { quoted: msg });
+                await sock.sendMessage(from, { text: `\`\`\`[ 🗑️ VOICE DELETED ]\n• Tag: ${tag}\`\`\`` }, { quoted: msg });
                 return;
             }
             if (cmdBody.toLowerCase() === '.voices') {
@@ -570,26 +479,9 @@ async function startBot() {
                 if (isOwnerHandoff) {
                     const ownerReplyUrl = "https://github.com/qurban01/Reacted-to/raw/refs/heads/main/New%20Owner_1788121338977.ogg";
                     await sendAudioUrl(from, msg, ownerReplyUrl);
-                    const handoffUI = 
-`\`\`\`
-╭━━〔 👤 HUMAN HANDOFF 〕━━╮
-┃                          ┃
-┃ ⏸️ DIANA Paused          ┃
-┃ ⏱️ Duration: 1 Hour      ┃
-┃ 🎯 Reason: Direct Handoff┃
-╰━━━━━━━━━━━━━━━━━━━━━━╯
-\`\`\``;
-                    notifyOwner(handoffUI);
+                    notifyOwner("```[ 👤 HANDOFF: PAUSED 1 HOUR ]```");
                 } else {
-                    const pausedUI = 
-`\`\`\`
-╭━━〔 ⏸️ DIANA PAUSED 〕━━╮
-┃                          ┃
-┃ Manual Reply Detected    ┃
-┃ ⏱️ Auto-Resume: 10 Minutes┃
-╰━━━━━━━━━━━━━━━━━━━━━╯
-\`\`\``;
-                    notifyOwner(pausedUI);
+                    notifyOwner("```[ ⏸️ PAUSED: 10 MINUTES ]```");
                 }
             }
             return;
@@ -620,18 +512,12 @@ async function startBot() {
             if (Date.now() - lastAlert > ALERT_COOLDOWN) {
                 alertedChats.set(chatId, Date.now());
                 const shortNumber = from.split('@')[0];
-                const snippet = body.length > 22 ? body.substring(0, 19) + '...' : body;
+                const snippet = body.length > 20 ? body.substring(0, 17) + '...' : body;
                 const urgentUI = 
 `\`\`\`
-╭━━━〔 ⚠️ URGENT ALERT 〕━━━╮
-┃                          ┃
-┃ 👤 Customer: ${shortNumber}     ┃
-┃ 🚨 Status: Possible Angry┃
-┃                          ┃
-┃ 💬 "${snippet}"          ┃
-┃                          ┃
-┃ ⚡ Action Recommended    ┃
-╰━━━━━━━━━━━━━━━━━━━━━━━╯
+⚠️ URGENT ALERT
+• User: ${shortNumber}
+• Msg: "${snippet}"
 \`\`\``;
                 notifyOwner(urgentUI);
                 await sendCustomVoiceClip(from, msg, 'rude');
@@ -723,19 +609,9 @@ Current Message Count in this Chat: ${msgCount}
             const snippet = lastMsg.length > 20 ? lastMsg.substring(0, 17) + '...' : lastMsg;
             const errUI = 
 `\`\`\`
-╭━━━〔 🔴 DIANA ERROR 〕━━━╮
-┃                          ┃
-┃ AI Failed To Generate    ┃
-┃    Reply                 ┃
-┃                          ┃
-┃ 👤 Customer: ${shortNumber}    ┃
-┃                          ┃
-┃ 💬 Customer Message:     ┃
-┃ "${snippet}"             ┃
-┃                          ┃
-┃ 🛠️ Please Check DIANA    ┃
-┃    Engine                ┃
-╰━━━━━━━━━━━━━━━━━━━━━━━╯
+❌ DIANA ERROR
+• User: ${shortNumber}
+• Msg: "${snippet}"
 \`\`\``;
             notifyOwner(errUI);
             return;
@@ -767,24 +643,16 @@ Current Message Count in this Chat: ${msgCount}
             await sendAudioUrl(from, msg, ownerReplyUrl);
             const shortNumber = from.split('@')[0];
             
-            const summaryPrompt = `Summarize this chat in 2-3 short lines in Roman Urdu for the owner. Just tell what the customer wants.\nChat:\n${historyText}`;
+            const summaryPrompt = `Summarize this chat in 2 lines in Roman Urdu for the owner.\nChat:\n${historyText}`;
             let summaryText = await tryGroq(summaryPrompt, false);
             if (!summaryText) summaryText = await tryGemini(summaryPrompt);
-            if (!summaryText) summaryText = "Customer wants to talk to you.";
+            if (!summaryText) summaryText = "Customer wants to talk.";
 
             const handoffSummaryUI = 
 `\`\`\`
-╭━━━〔 👤 CUSTOMER HANDOFF 〕━━━╮
-┃                               ┃
-┃ 📱 Customer: ${shortNumber}         ┃
-┃ ⏸️ DIANA: Paused For 1 Hour   ┃
-┃                               ┃
-┃ 📝 CHAT SUMMARY               ┃
-┃ ───────────────────────────── ┃
-┃ ${summaryText}                ┃
-┃                               ┃
-┃ 🔔 Your Attention Is Required ┃
-╰━━━━━━━━━━━━━━━━━━━━━━━━━━━╯
+👤 HANDOFF REQUEST
+• User: ${shortNumber}
+• Summary: ${summaryText}
 \`\`\``;
             notifyOwner(handoffSummaryUI);
         }
@@ -794,16 +662,7 @@ Current Message Count in this Chat: ${msgCount}
         if (u.connection === 'open') {
             isStarting = false;
             console.log('DIANA Active');
-            const startupUI = 
-`\`\`\`
-╭━━━〔 🕸️ DIANA SYSTEM 〕━━━╮
-┃                          ┃
-┃ ✅ DIANA Connected       ┃
-┃ 💬 Type *.list* To View  ┃
-┃    Available Commands    ┃
-╰━━━━━━━━━━━━━━━━━━━━━━╯
-\`\`\``;
-            notifyOwner(startupUI);
+            notifyOwner("```[ ✅ DIANA CONNECTED ]```");
         } else if (u.connection === 'close') {
             isStarting = false;
             const statusCode = u.lastDisconnect?.error?.output?.statusCode;

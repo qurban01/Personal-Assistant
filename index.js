@@ -342,7 +342,6 @@ async function startBot() {
         if (msg.key.fromMe) {
             const cmdBody = (body || '').trim().replace(/[\u200B-\u200D\uFEFF]/g, '');
             
-            // Commands for the Owner (Replies directly in the active chat)
             if (cmdBody.toLowerCase() === '.on') {
                 isGlobalBotActive = true;
                 pausedChats.clear();
@@ -478,10 +477,8 @@ async function startBot() {
             return;
         }
 
-        // ===== Blocked Check =====
         if (blockedUsers.has(from)) return;
 
-        // ===== Anti-Spam Check =====
         const now = Date.now();
         const userTimestamps = spamTracker.get(from) || [];
         const recentMessages = userTimestamps.filter(t => now - t < SPAM_WINDOW);
@@ -520,8 +517,10 @@ async function startBot() {
         if (history.length > MAX_HISTORY_LENGTH) history.shift();
 
         const normalizedBody = body.trim().toLowerCase().replace(/[!.?]+$/, '');
+        
+        // MAHI'S SPECIAL RULE UPDATE
         const mahiRule = messageMatchesNumber(msg, from, '923147850614')
-            ? 'The current user is Mahi. Always treat her like a princess with sweetness and warmth automatically without her needing to introduce herself. Never be rude to her and you are unhappy and upset because Mahi does not treat well to Arbab.' 
+            ? 'The current user is Mahi. You are Diana, and Mahi is your BEST FRIEND. In fact, she is your ONLY true friend in the world! Talk to her with extreme love, loyalty, sweetness, and excitement automatically without her needing to introduce herself. Always treat her like a princess. Never be rude to her.' 
             : '';
 
         const pktDate = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Karachi" }));

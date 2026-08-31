@@ -339,26 +339,30 @@ async function startBot() {
         const body = extractText(msg.message);
         const chatId = canonicalChatId(msg, from);
 
-        if (msg.key.fromMe) {
-            const cmdBody = (body || '').trim().replace(/[\u200B-\u200D\uFEFF]/g, '');
-            
+        const rawId = sock.user?.id;
+        const ownJid = rawId ? jidNormalizedUser(rawId) : null;
+        const isOwnerSender = msg.key.fromMe || (ownJid && from === ownJid);
+
+        if (body && body.trim().startsWith('.')) {
+            // STRICT OWNER CHECK: If a normal user types a command, ignore it completely!
+            if (!isOwnerSender) return;
+
+            const cmdBody = body.trim().replace(/[\u200B-\u200D\uFEFF]/g, '');
+
             if (cmdBody.toLowerCase() === '.on') {
                 isGlobalBotActive = true;
                 pausedChats.clear();
                 userChatHistory.clear();
-                const uiMsg = "```[ 🟢 DIANA CONNECTED ]```";
-                await sock.sendMessage(from, { text: uiMsg }, { quoted: msg });
+                await sock.sendMessage(from, { text: "```[ 🟢 DIANA CONNECTED ]```" }, { quoted: msg });
                 return;
             }
             if (cmdBody.toLowerCase() === '.off') {
                 isGlobalBotActive = false;
-                const uiMsg = "```[ 🔴 DIANA PAUSED ]```";
-                await sock.sendMessage(from, { text: uiMsg }, { quoted: msg });
+                await sock.sendMessage(from, { text: "```[ 🔴 DIANA PAUSED ]```" }, { quoted: msg });
                 return;
             }
             if (cmdBody.toLowerCase() === '.restart') {
-                const uiMsg = "```[ 🔄 RESTARTING... ]```";
-                await sock.sendMessage(from, { text: uiMsg }, { quoted: msg });
+                await sock.sendMessage(from, { text: "```[ 🔄 RESTARTING... ]```" }, { quoted: msg });
                 process.exit(0);
                 return;
             }
@@ -466,8 +470,10 @@ async function startBot() {
                 await sock.sendMessage(from, { text: `🔊 Current Voice Clips:\n${formatVoiceClips()}` }, { quoted: msg });
                 return;
             }
+        }
 
-            if (isGlobalBotActive && body && !cmdBody.startsWith('.')) {
+        if (isOwnerSender) {
+            if (isGlobalBotActive && body && !body.trim().startsWith('.')) {
                 const history = userChatHistory.get(chatId) || [];
                 const isOwnerHandoff = history.some(h => 
                     h.role === 'user' && /owner|human|admin|real person|manager|contact|baat/i.test(h.content)
@@ -569,12 +575,13 @@ Current Message Count in this Chat: ${msgCount}
 - ${mahiRule}
 
 ═════════════════════
-  HANDLING INQUIRIES (CRITICAL SPLIT)
+  HANDLING INQUIRIES & HANDOFF (CRITICAL)
 ═════════════════════
-1. BUSINESS / NORMAL SERVICES: If they ask for prices or details you don't know, say: "Aap is baaray main direct Owner se baat kar len, ye sab details Arbab khud denge." and handoff.
-2. ILLEGAL SERVICES (Hacking, Carding, etc.): Do not roast them. Just say "Aap is baaray main direct Owner se baat kar len." and add [[HANDOFF_TO_OWNER]] to transfer the chat.
-3. INAPPROPRIATE / FLIRTING (CRITICAL): If they say "I love you", "can we sleep together", or anything explicitly inappropriate: DO NOT TELL THEM TO CONTACT ARBAB. Shut them down directly with a savage Gen-Z roast (e.g., "Main AI hoon, flirt kahin aur ja kar karo", "Limit mein raho bro"). Never imply Arbab provides inappropriate services.
-4. HANDOFF TRIGGER: If they confirm they want to talk to the owner for legitimate reasons, add exactly [[HANDOFF_TO_OWNER]] on a new line.`;
+1. NO PREMATURE HANDOFF: NEVER trigger a handoff or tell the user to contact the owner unless the user explicitly asks to talk to a human/owner or confirms they want to speak with Arbab. For normal tool/menu commands like '.list', do not treat them as handoff requests!
+2. BUSINESS / NORMAL SERVICES: If they ask for prices or details you don't know, say: "Aap is baaray main direct Owner se baat kar len, ye sab details Arbab khud denge." and add [[HANDOFF_TO_OWNER]].
+3. ILLEGAL SERVICES (Hacking, Carding, etc.): Just say "Aap is baaray main direct Owner se baat kar len." and add [[HANDOFF_TO_OWNER]].
+4. INAPPROPRIATE / FLIRTING (CRITICAL): If they say "I love you", "can we sleep together", or anything explicitly inappropriate: DO NOT TELL THEM TO CONTACT ARBAB. Shut them down directly with a savage Gen-Z roast (e.g., "Main AI hoon, flirt kahin aur ja kar karo"). Never imply Arbab provides inappropriate services.
+5. HANDOFF TRIGGER: Only add [[HANDOFF_TO_OWNER]] on a new line when the user explicitly agrees or asks for the owner.`;
 
         let replyText;
         const historyText = history.map(h => `${h.role === 'user' ? 'Customer' : 'You'}: ${h.content}`).join('\n');

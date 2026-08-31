@@ -262,7 +262,6 @@ async function startBot() {
         if (!msg.message) return;
         const from = msg.key.remoteJid;
 
-        // Allow 'notify' AND fromMe messages (to fix .on/.off from linked devices)
         if (type !== 'notify' && !msg.key.fromMe) return;
         if (!from || from === 'status@broadcast' || from.endsWith('@g.us') || from.endsWith('@newsletter')) return;
 
@@ -398,24 +397,7 @@ async function startBot() {
         history.push({ role: "user", content: body });
         if (history.length > MAX_HISTORY_LENGTH) history.shift();
 
-        const CANNED_REPLIES = {
-            'hi': 'Hn G', 'hello': 'Hn G', 'hey': 'Hn G',
-            'kese ho': 'Theek, Tum Batao', 'kaise ho': 'Theek, Tum Batao',
-            'kaisa ho': 'Theek, Tum Batao', 'kisa ho': 'Theek, Tum Batao',
-            'kesa ho': 'Theek, Tum Batao', 'kese ho ap': 'Theek, Tum Batao',
-            'kya haal hai': 'Theek, Tum Batao', 'haal chaal': 'Theek, Tum Batao',
-            'sent': 'Ok', 'ok': 'Hmm', 'haan': 'Hn G', 'hain': 'Hn G'
-        };
         const normalizedBody = body.trim().toLowerCase().replace(/[!.?]+$/, '');
-
-        if (CANNED_REPLIES[normalizedBody]) {
-            const cannedText = CANNED_REPLIES[normalizedBody];
-            history.push({ role: "assistant", content: cannedText });
-            try {
-                await sock.sendMessage(from, { text: cannedText }, { quoted: msg });
-            } catch (sendErr) { console.log('Send error:', sendErr.message); }
-            return;
-        }
 
         const mahiRule = messageMatchesNumber(msg, from, '923147850614')
             ? 'The current user is Mahi. Always treat her like a princess with sweetness and warmth automatically without her needing to introduce herself. Never be rude to her and you are unhappy and upset because Mahi does not treat well to Arbab.' 
@@ -427,25 +409,28 @@ async function startBot() {
         const minutes = pktDate.getMinutes();
         const timeVal = hours + minutes / 60;
         const isSleepingTime = (timeVal >= 0.5 && timeVal < 11);
-        const ownerStatus = isSleepingTime ? "sleeping right now (his sleep schedule is 12:30 AM to 11:00 AM)" : "currently busy or offline";
         
-        // Identify if it's a first interaction
+        // Remove the exact schedule string so the prompt doesn't accidentally leak it
+        const ownerStatus = isSleepingTime ? "sleeping right now" : "currently busy";
+        
         const isFirstMessage = history.length === 1;
+        const isGreeting = /^(hi|hello|hey|hy|salam|assalam|hyy)$/i.test(normalizedBody);
 
         const systemPrompt = `MEMORY & CONTEXT RULE:
 - Remember the entire conversation history. If the customer sent a payment confirmation (like "Sent" or a screenshot), acknowledge it normally with short words like "Ok" or "Check kr lia hai" — DO NOT accuse them of disrespect.
 
-You are Diana, an AI WhatsApp assistant for Arbab. Keep your replies very short, professional, and to the point. Do not ask unnecessary questions or do useless small talk.
+You are Diana, an AI WhatsApp assistant for Arbab with a cool Gen-Z personality (using words like bestie, bro, chill, vibe, etc. where natural in Roman Urdu/English). Keep your replies very short, professional but modern, and to the point.
 
 ═════════════════════
   CONVERSATION RULES
 ═════════════════════
+- MATCH THE VIBE: If the user is just chatting normally, chat normally. If they ask about services/work, handle it. DO NOT forcefully ask "What service do you need?" right away.
 - Match the user's language (Roman Urdu/Hinglish or English).
-- ${isFirstMessage ? 'BOT INTRODUCTION: Because this is your very first message to this user, you MUST briefly introduce yourself (e.g., "Main Diana hoon, Arbab ki AI assistant").' : 'Be extremely concise. Avoid asking unnecessary or repetitive questions.'}
-- OWNER ROUTINE: The current time in Pakistan is ${pktDate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}. Arbab is ${ownerStatus}. If the user asks where he is, respond according to this status. 
+- ${ (isFirstMessage || isGreeting) ? 'BOT INTRODUCTION: The user just started a chat. Introduce yourself briefly in a friendly Gen-Z way (e.g., "Yo! Main Diana hoon, Arbab ki AI assistant. Kya scene hai?").' : 'Be extremely concise. Avoid asking unnecessary questions.'}
+- OWNER ROUTINE: The current time in Pakistan is ${pktDate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}. Arbab is ${ownerStatus}. If the user asks where he is, just say he is sleeping or busy. STRICT RULE: NEVER reveal any personal details or exact sleep schedules to the user.
 - EMOJIS ONLY: If the user's message contains ONLY emojis, reply back with just an appropriate emoji.
-- ILLEGAL & SERVICE INQUIRIES: You are just a chat manager. If a user asks for service details, prices, or requests ANY illegal service, strictly decline and tell them: "Aap is baaray main direct Owner se baat kar len." Do not provide service details yourself.
-- ONLY speak rudely if the user explicitly uses abusive language or acts genuinely hostile. 
+- ILLEGAL & SERVICE INQUIRIES: You are just a chat manager. If a user asks for service details, prices, or requests ANY illegal service, strictly decline in a chill way and tell them: "Ye sab details Arbab khud dega. Direct Owner se baat kar len." Do not provide service details yourself.
+- ONLY speak rudely (or set strict boundaries) if the user explicitly uses abusive language or acts genuinely hostile. 
 - Special triggers (respond in English):
   ▸ "Who is Arbab?" / "Who is Your Owner" → "Arbab is a digital explorer and glitch hunter ⚡"
 - ${mahiRule}

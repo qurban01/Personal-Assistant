@@ -49,6 +49,33 @@ const processedIncomingIds = new Set();
 const MAX_PROCESSED_IDS = 500;
 let pairingRequested = false;
 
+// ===== Blocked Users (MongoDB) =====
+const blockedUsers = new Set();
+const BlockedSchema = new mongoose.Schema({ _id: String }, { collection: 'blocked_users' });
+const BlockedEntry = mongoose.models.BlockedEntry || mongoose.model('BlockedEntry', BlockedSchema);
+
+async function loadBlockedUsers() {
+    try {
+        const docs = await BlockedEntry.find({}).lean();
+        blockedUsers.clear();
+        docs.forEach(d => blockedUsers.add(d._id));
+    } catch (err) {
+        console.log('Could not load blocked users:', err.message);
+    }
+}
+
+async function blockUser(number) {
+    const jid = `${number}@s.whatsapp.net`;
+    blockedUsers.add(jid);
+    await BlockedEntry.findByIdAndUpdate(jid, { _id: jid }, { upsert: true });
+}
+
+async function unblockUser(number) {
+    const jid = `${number}@s.whatsapp.net`;
+    blockedUsers.delete(jid);
+    await BlockedEntry.findByIdAndDelete(jid);
+}
+
 // ===== Price List (MongoDB) =====
 const priceList = new Map();
 const PriceSchema = new mongoose.Schema({ _id: String, price: String }, { collection: 'price_list' });
@@ -159,11 +186,10 @@ function canonicalChatId(msg, from) {
 }
 
 const URGENT_ANGRY_KEYWORDS = [
-    'gussa', 'gussy', 'ghussa', 'jaldi karo', 'jaldi bhejo', 'urgent',
+    'gussa', 'ghussa', 'jaldi karo', 'jaldi bhejo', 'urgent',
     'fraud', 'scam', 'dhoka', 'dhokha', 'chor', 'chori', 'complaint',
     'refund', 'paisa wapis', 'police', 'fir', 'thana', 'legal action',
-    'bakwas', 'faltu', 'ghatiya', 'waste of time', 'time waste',
-    'kaha ho', 'kaha reh gaye', 'kab tak', 'bohat late', 'bahut late'
+    'bakwas', 'faltu', 'ghatiya', 'waste of time', 'time waste'
 ];
 
 function isUrgentOrAngry(text) {
@@ -186,6 +212,7 @@ async function startBot() {
     isStarting = true;
     await loadPriceList();
     await loadVoiceClips();
+    await loadBlockedUsers();
 
     const { state, saveCreds } = await useMongoAuthState('daina-session');
     const { version } = await fetchLatestBaileysVersion();
@@ -310,6 +337,23 @@ async function startBot() {
                 process.exit(0);
                 return;
             }
+            // Block & Unblock Commands
+            if (cmdBody.toLowerCase().startsWith('.block ')) {
+                const num = cmdBody.slice('.block '.length).trim().replace(/[^0-9]/g, '');
+                if (num) {
+                    await blockUser(num);
+                    notifyOwner(`🚫 Bot is now disabled for: ${num}`);
+                }
+                return;
+            }
+            if (cmdBody.toLowerCase().startsWith('.unblock ')) {
+                const num = cmdBody.slice('.unblock '.length).trim().replace(/[^0-9]/g, '');
+                if (num) {
+                    await unblockUser(num);
+                    notifyOwner(`✅ Bot is now enabled for: ${num}`);
+                }
+                return;
+            }
             if (cmdBody.toLowerCase().startsWith('.setprice ')) {
                 const raw = cmdBody.slice('.setprice '.length);
                 const [service, price] = raw.split('=').map(s => s?.trim());
@@ -350,6 +394,7 @@ async function startBot() {
             }
 
             if (isGlobalBotActive && body && !cmdBody.startsWith('.')) {
+                // If it's your own regular message, don't auto-pause unless it looks like a manual handoff
                 const history = userChatHistory.get(chatId) || [];
                 const isOwnerHandoff = history.some(h => 
                     h.role === 'user' && /owner|human|admin|real person|manager|contact|baat/i.test(h.content)
@@ -367,6 +412,9 @@ async function startBot() {
             }
             return;
         }
+
+        // If user is in blocked list, bot will completely ignore them
+        if (blockedUsers.has(from)) return;
 
         if (body) {
             const lowerBody = body.toLowerCase().trim();
@@ -410,7 +458,6 @@ async function startBot() {
         const timeVal = hours + minutes / 60;
         const isSleepingTime = (timeVal >= 0.5 && timeVal < 11);
         
-        // Remove the exact schedule string so the prompt doesn't accidentally leak it
         const ownerStatus = isSleepingTime ? "sleeping right now" : "currently busy";
         
         const isFirstMessage = history.length === 1;
@@ -419,18 +466,18 @@ async function startBot() {
         const systemPrompt = `MEMORY & CONTEXT RULE:
 - Remember the entire conversation history. If the customer sent a payment confirmation (like "Sent" or a screenshot), acknowledge it normally with short words like "Ok" or "Check kr lia hai" — DO NOT accuse them of disrespect.
 
-You are Diana, an AI WhatsApp assistant for Arbab with a cool Gen-Z personality (using words like bestie, bro, chill, vibe, etc. where natural in Roman Urdu/English). Keep your replies very short, professional but modern, and to the point.
+You are Diana, an AI WhatsApp assistant for Arbab. Keep your replies very short, professional but friendly, and to the point. STRICT RULE: DO NOT use overly informal slang like "bestie", "bro", "yo". Always maintain a respectful and polite tone, especially since senior people may be texting.
 
 ═════════════════════
   CONVERSATION RULES
 ═════════════════════
-- MATCH THE VIBE: If the user is just chatting normally, chat normally. If they ask about services/work, handle it. DO NOT forcefully ask "What service do you need?" right away.
+- MATCH THE VIBE: If the user is just chatting normally, chat normally and politely. If they ask about services/work, handle it. DO NOT forcefully ask "What service do you need?" right away.
 - Match the user's language (Roman Urdu/Hinglish or English).
-- ${ (isFirstMessage || isGreeting) ? 'BOT INTRODUCTION: The user just started a chat. Introduce yourself briefly in a friendly Gen-Z way (e.g., "Yo! Main Diana hoon, Arbab ki AI assistant. Kya scene hai?").' : 'Be extremely concise. Avoid asking unnecessary questions.'}
+- ${ (isFirstMessage || isGreeting) ? 'BOT INTRODUCTION: The user just started a chat. Introduce yourself respectfully (e.g., "Salam! Main Diana hoon, Arbab ki AI assistant. Boliye main aapki kya madad kar sakti hoon?").' : 'Be extremely concise. Avoid asking unnecessary questions.'}
 - OWNER ROUTINE: The current time in Pakistan is ${pktDate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}. Arbab is ${ownerStatus}. If the user asks where he is, just say he is sleeping or busy. STRICT RULE: NEVER reveal any personal details or exact sleep schedules to the user.
 - EMOJIS ONLY: If the user's message contains ONLY emojis, reply back with just an appropriate emoji.
-- ILLEGAL & SERVICE INQUIRIES: You are just a chat manager. If a user asks for service details, prices, or requests ANY illegal service, strictly decline in a chill way and tell them: "Ye sab details Arbab khud dega. Direct Owner se baat kar len." Do not provide service details yourself.
-- ONLY speak rudely (or set strict boundaries) if the user explicitly uses abusive language or acts genuinely hostile. 
+- ILLEGAL & SERVICE INQUIRIES: You are just a chat manager. If a user asks for service details, prices, or requests ANY illegal service, strictly decline politely and tell them: "Aap is baaray main direct Owner se baat kar len, ye sab details Arbab khud denge." Do not provide service details yourself.
+- ONLY speak firmly if the user explicitly uses abusive language or acts genuinely hostile. 
 - Special triggers (respond in English):
   ▸ "Who is Arbab?" / "Who is Your Owner" → "Arbab is a digital explorer and glitch hunter ⚡"
 - ${mahiRule}
